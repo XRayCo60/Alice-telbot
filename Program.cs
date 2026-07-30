@@ -1,4 +1,4 @@
-﻿// ===== /root/CountryBot/Program.cs =====
+// ===== /root/CountryBot/Program.cs =====
 // Fixed version — daily update timer properly awaits, group messages + DB backup to admin
 using System;
 using System.Collections.Concurrent;
@@ -39,9 +39,21 @@ class Country
     public long Planes { get; set; } = 0;
     public long Bombers { get; set; } = 0;
     public long AntiAir { get; set; } = 0;
+    public long Boats { get; set; } = 0;
+    public long Submarines { get; set; } = 0;
+    public long Battleships { get; set; } = 0;
+    public long BattleshipDamage { get; set; } = 0; // total damage % sum or damage points
     public long DefenseTanks { get; set; } = 0;
     public long DefenseSoldiers { get; set; } = 0;
     public long DefenseFighters { get; set; } = 0;
+    public long DefenseBoats { get; set; } = 0;
+    public long DefenseSubmarines { get; set; } = 0;
+    //  – naval fuel & damage tracking
+    public int BoatsFuel { get; set; } = 100; // 0-100 fuel percent for boats fleet
+    public int SubmarinesFuel { get; set; } = 100;
+    public long BoatsAtSea { get; set; } = 0;
+    public long SubmarinesAtSea { get; set; } = 0;
+    public long BattleshipsAtSea { get; set; } = 0;
     public int AirDefStrategy { get; set; } = 1;
     public int AirDefTactic { get; set; } = 1;
     public int Besieged { get; set; } = 0;
@@ -85,6 +97,7 @@ class Transfer
     public long SenderId { get; set; }
     public long ReceiverId { get; set; }
     public string ResourceType { get; set; } = "";
+    public string ModelName { get; set; } = "";
     public long Amount { get; set; }
     public long ArriveAtMs { get; set; }
     public int Notified { get; set; }
@@ -126,6 +139,27 @@ class DeploymentContributor
     public int Tactic { get; set; } = 1;
 }
 
+class NavalInvasion
+{
+    public long Id { get; set; }
+    public long ChatId { get; set; }
+    public long AttackerId { get; set; }
+    public long DefenderId { get; set; }
+    public long Boats { get; set; }
+    public long Submarines { get; set; }
+    public long Battleships { get; set; }
+    public string BoatModels { get; set; } = "";
+    public string SubModels { get; set; } = "";
+    public string BattleshipModels { get; set; } = "";
+    public int Strategy { get; set; } = 1;
+    public int Tactic { get; set; } = 1;
+    public long CreatedAtMs { get; set; }
+    public long ArriveAtMs { get; set; }
+    public int Processed { get; set; } = 0;
+    public string AttackerName { get; set; } = "";
+    public string DefenderName { get; set; } = "";
+}
+
 enum SessionStep
 {
     None,
@@ -152,12 +186,17 @@ enum SessionStep
     OwnerWaitingRoyalDeductAmount,
     AttackWaitingGroup,
     AttackWaitingTarget,
+    AttackWaitingAttackType,
     AttackWaitingStrategy,
     AttackWaitingTactic,
     AttackWaitingTanks,
     AttackWaitingSoldiers,
     AttackWaitingFighters,
     AttackWaitingBombers,
+    AttackWaitingTankModel,
+    AttackWaitingPlaneModel,
+    AttackWaitingBomberModel,
+    AttackWaitingModelAmount,
     AttackWaitingAirStrategy,
     AttackWaitingAirTactic,
     DefenseWaitingGroup,
@@ -166,6 +205,9 @@ enum SessionStep
     DefenseWaitingTanks,
     DefenseWaitingSoldiers,
     DefenseWaitingFighters,
+    DefenseWaitingModelPct,
+    DefenseWaitingTankModel,
+    DefenseWaitingPlaneModel,
     WaitingAllianceName,
     WaitingAllianceFlag,
     LeaderWaitingKickMember,
@@ -174,6 +216,7 @@ enum SessionStep
     TransferWaitingTarget,
     TransferWaitingDuration,
     TransferWaitingAmount,
+    TransferWaitingModelAmount,
     DeployWaitingChat,
     DeployWaitingTarget,
     DeployWaitingDuration,
@@ -184,6 +227,9 @@ enum SessionStep
     DeployWaitingSoldiers,
     DeployWaitingFighters,
     DeployWaitingBombers,
+    DeployWaitingTankModel,
+    DeployWaitingPlaneModel,
+    DeployWaitingBomberModel,
     DeployJoinWaitingStrategy,
     DeployJoinWaitingTactic,
     DeployJoinWaitingTanks,
@@ -203,6 +249,10 @@ class UserSession
     public string TransferResourceType { get; set; } = "";
     public long TransferTargetId { get; set; } = 0;
     public int TransferDurationMin { get; set; } = 0;
+    public List<string> TransferModelNames { get; set; } = new();
+    public List<long> TransferModelCounts { get; set; } = new();
+    public List<long> TransferModelAmounts { get; set; } = new();
+    public int TransferModelIndex { get; set; } = 0;
     public long VisionDestChatId { get; set; } = 0;
     public long VisionSourceId { get; set; } = 0;
     public long DeployChatId { get; set; } = 0;
@@ -219,6 +269,32 @@ class UserSession
     public long DeployBombers { get; set; } = 0;
     public int DefTankPct { get; set; } = 100;
     public int DefSoldierPct { get; set; } = 100;
+    public int DefFighterPct { get; set; } = 100;
+    //  – per-model defense & attack tracking
+    public string DefenseCurrentCategory { get; set; } = "";
+    public List<string> DefenseModelNames { get; set; } = new();
+    public List<long> DefenseModelCounts { get; set; } = new();
+    public List<int> DefenseModelPcts { get; set; } = new();
+    public int DefenseModelIndex { get; set; } = 0;
+
+    public string AttackCurrentCategory { get; set; } = "";
+    public List<string> AttackModelNames { get; set; } = new();
+    public List<long> AttackModelCounts { get; set; } = new();
+    public List<long> AttackModelAmounts { get; set; } = new();
+    public int AttackModelIndex { get; set; } = 0;
+    public List<string> AttackTankModelNamesFinal { get; set; } = new();
+    public List<long> AttackTankModelAmountsFinal { get; set; } = new();
+    public List<string> AttackPlaneModelNamesFinal { get; set; } = new();
+    public List<long> AttackPlaneModelAmountsFinal { get; set; } = new();
+    public List<string> AttackBomberModelNamesFinal { get; set; } = new();
+    public List<long> AttackBomberModelAmountsFinal { get; set; } = new();
+
+    public string DeployCurrentCategory { get; set; } = "";
+    public List<string> DeployModelNames { get; set; } = new();
+    public List<long> DeployModelCounts { get; set; } = new();
+    public List<long> DeployModelAmounts { get; set; } = new();
+    public int DeployModelIndex { get; set; } = 0;
+
     public Faction Faction { get; set; }
     public string FactionStr { get; set; } = "";
     public long PromptChatId { get; set; }
@@ -232,8 +308,14 @@ class UserSession
     public long AttackSoldiers { get; set; } = 0;
     public long AttackFighters { get; set; } = 0;
     public long AttackBombers { get; set; } = 0;
+    public long AttackBoats { get; set; } = 0;
+    public long AttackSubmarines { get; set; } = 0;
+    public long AttackBattleships { get; set; } = 0;
     public int AttackAirStrategy { get; set; } = 0;
     public int AttackAirTactic { get; set; } = 0;
+    public bool AttackIsNaval { get; set; } = false;
+    public int AttackNavalStrategy { get; set; } = 0;
+    public int AttackNavalTactic { get; set; } = 0;
     public long DefenseTanks { get; set; } = 0;
     public long DefenseSoldiers { get; set; } = 0;
     public int DefenseStrategy { get; set; } = 1;
@@ -260,6 +342,8 @@ static partial class Database
         p.ExecuteNonQuery();
         return con;
     }
+
+    public static SqliteConnection OpenConForAdmin() => OpenCon();
 
     public static void Init()
     {
@@ -369,6 +453,7 @@ static partial class Database
             SenderId INTEGER NOT NULL,
             ReceiverId INTEGER NOT NULL,
             ResourceType TEXT NOT NULL,
+            ModelName TEXT NOT NULL DEFAULT '',
             Amount INTEGER NOT NULL,
             ArriveAtMs INTEGER NOT NULL,
             Notified INTEGER DEFAULT 0
@@ -417,7 +502,13 @@ static partial class Database
         string dailyDefendCounts = @"CREATE TABLE IF NOT EXISTS DailyDefendCounts(DefenderId INTEGER NOT NULL, AttackDate TEXT NOT NULL, Count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(DefenderId,AttackDate));";
         string attackerFlags = @"CREATE TABLE IF NOT EXISTS AttackerFlags(OwnerId INTEGER NOT NULL, AttackDate TEXT NOT NULL, PRIMARY KEY(OwnerId, AttackDate));";
         string eqModels = @"CREATE TABLE IF NOT EXISTS EquipmentModels(OwnerId INTEGER NOT NULL, ChatId INTEGER NOT NULL, Category TEXT NOT NULL, ModelName TEXT NOT NULL, Count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(OwnerId,ChatId,Category,ModelName));";
-        foreach (var sql in new[] { countries, flags, settings, royal, cooldowns, defeats, shieldExemptions, alliances, allianceMembers, allianceInvites, transfers, deployments, deploymentContributors, groupLockExemptions, visionLogs, visionMessageMap, attackAbandonLocks, dailyDefendCounts, attackerFlags, eqModels })
+        string defenseModels = @"CREATE TABLE IF NOT EXISTS DefenseModels(OwnerId INTEGER NOT NULL, ChatId INTEGER NOT NULL, Category TEXT NOT NULL, ModelName TEXT NOT NULL, DefPct INTEGER NOT NULL DEFAULT 100, PRIMARY KEY(OwnerId,ChatId,Category,ModelName));";
+        //  – naval expansion tables
+        string navalInvasions = @"CREATE TABLE IF NOT EXISTS NavalInvasions(Id INTEGER PRIMARY KEY AUTOINCREMENT, ChatId INTEGER NOT NULL, AttackerId INTEGER NOT NULL, DefenderId INTEGER NOT NULL, Boats INTEGER DEFAULT 0, Submarines INTEGER DEFAULT 0, Battleships INTEGER DEFAULT 0, BoatModels TEXT DEFAULT '', SubModels TEXT DEFAULT '', BattleshipModels TEXT DEFAULT '', Strategy INTEGER DEFAULT 1, Tactic INTEGER DEFAULT 1, CreatedAtMs INTEGER NOT NULL, ArriveAtMs INTEGER NOT NULL, Processed INTEGER DEFAULT 0, AttackerName TEXT DEFAULT '', DefenderName TEXT DEFAULT '');";
+        string attackShields = @"CREATE TABLE IF NOT EXISTS AttackShields(OwnerId INTEGER NOT NULL, ChatId INTEGER NOT NULL, ShieldUntilMs INTEGER NOT NULL, AttackCount INTEGER DEFAULT 0, LastAttackMs INTEGER DEFAULT 0, PRIMARY KEY(OwnerId,ChatId));";
+        string boatFuelStates = @"CREATE TABLE IF NOT EXISTS BoatFuelStates(OwnerId INTEGER NOT NULL, ChatId INTEGER NOT NULL, FuelPct INTEGER DEFAULT 100, PRIMARY KEY(OwnerId,ChatId));";
+        string navalBoatCooldowns = @"CREATE TABLE IF NOT EXISTS NavalBoatCooldowns(OwnerId INTEGER NOT NULL, ChatId INTEGER NOT NULL, CooldownUntilMs INTEGER NOT NULL, PRIMARY KEY(OwnerId,ChatId));";
+        foreach (var sql in new[] { countries, flags, settings, royal, cooldowns, defeats, shieldExemptions, alliances, allianceMembers, allianceInvites, transfers, deployments, deploymentContributors, groupLockExemptions, visionLogs, visionMessageMap, attackAbandonLocks, dailyDefendCounts, attackerFlags, eqModels, defenseModels, navalInvasions, attackShields, boatFuelStates, navalBoatCooldowns })
         {
             using var cmd = con.CreateCommand();
             cmd.CommandText = sql;
@@ -449,8 +540,20 @@ static partial class Database
         EnsureColumn(con, "Countries", "DefTankPct", "INTEGER DEFAULT 100");
         EnsureColumn(con, "Countries", "DefSoldierPct", "INTEGER DEFAULT 100");
         EnsureColumn(con, "Countries", "DefFighterPct", "INTEGER DEFAULT 100");
+        EnsureColumn(con, "Countries", "Boats", "INTEGER DEFAULT 0");
+        EnsureColumn(con, "Countries", "Submarines", "INTEGER DEFAULT 0");
+        EnsureColumn(con, "Countries", "Battleships", "INTEGER DEFAULT 0");
+        EnsureColumn(con, "Countries", "BattleshipDamage", "INTEGER DEFAULT 0");
+        EnsureColumn(con, "Countries", "DefenseBoats", "INTEGER DEFAULT 0");
+        EnsureColumn(con, "Countries", "DefenseSubmarines", "INTEGER DEFAULT 0");
+        EnsureColumn(con, "Countries", "BoatsFuel", "INTEGER DEFAULT 100");
+        EnsureColumn(con, "Countries", "SubmarinesFuel", "INTEGER DEFAULT 100");
+        EnsureColumn(con, "Countries", "BoatsAtSea", "INTEGER DEFAULT 0");
+        EnsureColumn(con, "Countries", "SubmarinesAtSea", "INTEGER DEFAULT 0");
+        EnsureColumn(con, "Countries", "BattleshipsAtSea", "INTEGER DEFAULT 0");
         // FIX(2): ستون جدید برای پیام پین‌شدهٔ صف‌آرایی (روی دیتابیس‌های قدیمی هم اضافه می‌شود)
         EnsureColumn(con, "Deployments", "AnnounceMsgId", "INTEGER DEFAULT 0");
+        EnsureColumn(con, "Transfers", "ModelName", "TEXT DEFAULT ''");
 
         using (var fix = con.CreateCommand())
         {
@@ -502,7 +605,8 @@ static partial class Database
     private const string COUNTRY_COLS =
         "ChatId,OwnerId,Name,OwnerName,Faction,FlagFileId,Money,Population," +
         "FactoryLevel,PortLevel,MineLevel,Iron,Soldiers,RecruitmentRate,Welfare," +
-        "Tanks,DefenseTanks,DefenseSoldiers,DefenseStrategy,DefenseTactic,Planes,TaxRate,Cities,Bombers,AntiAir,DefenseFighters,AirDefStrategy,AirDefTactic,Besieged,DefenseWins,CreatedAtMs,DefTankPct,DefSoldierPct,DefFighterPct";
+        "Tanks,DefenseTanks,DefenseSoldiers,DefenseStrategy,DefenseTactic,Planes,TaxRate,Cities,Bombers,AntiAir,DefenseFighters,AirDefStrategy,AirDefTactic,Besieged,DefenseWins,CreatedAtMs,DefTankPct,DefSoldierPct,DefFighterPct," +
+        "Boats,Submarines,Battleships,BattleshipDamage,DefenseBoats,DefenseSubmarines,BoatsFuel,SubmarinesFuel,BoatsAtSea,SubmarinesAtSea,BattleshipsAtSea";
 
     private static Country ReadCountry(SqliteDataReader r)
     {
@@ -542,6 +646,17 @@ static partial class Database
             DefTankPct = r.FieldCount > 31 && !r.IsDBNull(31) ? r.GetInt32(31) : 100,
             DefSoldierPct = r.FieldCount > 32 && !r.IsDBNull(32) ? r.GetInt32(32) : 100,
             DefFighterPct = r.FieldCount > 33 && !r.IsDBNull(33) ? r.GetInt32(33) : 100,
+            Boats = r.FieldCount > 34 && !r.IsDBNull(34) ? r.GetInt64(34) : 0,
+            Submarines = r.FieldCount > 35 && !r.IsDBNull(35) ? r.GetInt64(35) : 0,
+            Battleships = r.FieldCount > 36 && !r.IsDBNull(36) ? r.GetInt64(36) : 0,
+            BattleshipDamage = r.FieldCount > 37 && !r.IsDBNull(37) ? r.GetInt64(37) : 0,
+            DefenseBoats = r.FieldCount > 38 && !r.IsDBNull(38) ? r.GetInt64(38) : 0,
+            DefenseSubmarines = r.FieldCount > 39 && !r.IsDBNull(39) ? r.GetInt64(39) : 0,
+            BoatsFuel = r.FieldCount > 40 && !r.IsDBNull(40) ? r.GetInt32(40) : 100,
+            SubmarinesFuel = r.FieldCount > 41 && !r.IsDBNull(41) ? r.GetInt32(41) : 100,
+            BoatsAtSea = r.FieldCount > 42 && !r.IsDBNull(42) ? r.GetInt64(42) : 0,
+            SubmarinesAtSea = r.FieldCount > 43 && !r.IsDBNull(43) ? r.GetInt64(43) : 0,
+            BattleshipsAtSea = r.FieldCount > 44 && !r.IsDBNull(44) ? r.GetInt64(44) : 0,
         };
     }
 
@@ -570,9 +685,9 @@ static partial class Database
         using var cmd = con.CreateCommand();
         cmd.CommandText = @"
         INSERT INTO Countries
-          (ChatId,OwnerId,Name,OwnerName,Faction,FlagFileId,Money,Population,FactoryLevel,PortLevel,MineLevel,Iron,Soldiers,RecruitmentRate,Welfare,Tanks,Planes,DefenseTanks,DefenseSoldiers,DefenseStrategy,DefenseTactic,TaxRate,Cities,Bombers,AntiAir,DefenseFighters,AirDefStrategy,AirDefTactic,Besieged,DefenseWins,CreatedAtMs)
+          (ChatId,OwnerId,Name,OwnerName,Faction,FlagFileId,Money,Population,FactoryLevel,PortLevel,MineLevel,Iron,Soldiers,RecruitmentRate,Welfare,Tanks,Planes,DefenseTanks,DefenseSoldiers,DefenseStrategy,DefenseTactic,TaxRate,Cities,Bombers,AntiAir,DefenseFighters,AirDefStrategy,AirDefTactic,Besieged,DefenseWins,CreatedAtMs,Boats,Submarines,Battleships,BattleshipDamage,DefenseBoats,DefenseSubmarines,BoatsFuel,SubmarinesFuel,BoatsAtSea,SubmarinesAtSea,BattleshipsAtSea)
         VALUES
-          (@ChatId,@OwnerId,@Name,@OwnerName,@Faction,@FlagFileId,@Money,@Population,@FactoryLevel,@PortLevel,@MineLevel,@Iron,@Soldiers,@RecruitmentRate,@Welfare,@Tanks,@Planes,@DefenseTanks,@DefenseSoldiers,@DefenseStrategy,@DefenseTactic,@TaxRate,@Cities,@Bombers,@AntiAir,@DefenseFighters,@AirDefStrategy,@AirDefTactic,@Besieged,@DefenseWins,@CreatedAtMs)";
+          (@ChatId,@OwnerId,@Name,@OwnerName,@Faction,@FlagFileId,@Money,@Population,@FactoryLevel,@PortLevel,@MineLevel,@Iron,@Soldiers,@RecruitmentRate,@Welfare,@Tanks,@Planes,@DefenseTanks,@DefenseSoldiers,@DefenseStrategy,@DefenseTactic,@TaxRate,@Cities,@Bombers,@AntiAir,@DefenseFighters,@AirDefStrategy,@AirDefTactic,@Besieged,@DefenseWins,@CreatedAtMs,@Boats,@Submarines,@Battleships,@BattleshipDamage,@DefenseBoats,@DefenseSubmarines,@BoatsFuel,@SubmarinesFuel,@BoatsAtSea,@SubmarinesAtSea,@BattleshipsAtSea)";
         cmd.Parameters.AddWithValue("@ChatId", c.ChatId);
         cmd.Parameters.AddWithValue("@OwnerId", c.OwnerId);
         cmd.Parameters.AddWithValue("@Name", c.Name);
@@ -604,6 +719,17 @@ static partial class Database
         cmd.Parameters.AddWithValue("@Besieged", c.Besieged);
         cmd.Parameters.AddWithValue("@DefenseWins", c.DefenseWins);
         cmd.Parameters.AddWithValue("@CreatedAtMs", c.CreatedAtMs);
+        cmd.Parameters.AddWithValue("@Boats", c.Boats);
+        cmd.Parameters.AddWithValue("@Submarines", c.Submarines);
+        cmd.Parameters.AddWithValue("@Battleships", c.Battleships);
+        cmd.Parameters.AddWithValue("@BattleshipDamage", c.BattleshipDamage);
+        cmd.Parameters.AddWithValue("@DefenseBoats", c.DefenseBoats);
+        cmd.Parameters.AddWithValue("@DefenseSubmarines", c.DefenseSubmarines);
+        cmd.Parameters.AddWithValue("@BoatsFuel", c.BoatsFuel);
+        cmd.Parameters.AddWithValue("@SubmarinesFuel", c.SubmarinesFuel);
+        cmd.Parameters.AddWithValue("@BoatsAtSea", c.BoatsAtSea);
+        cmd.Parameters.AddWithValue("@SubmarinesAtSea", c.SubmarinesAtSea);
+        cmd.Parameters.AddWithValue("@BattleshipsAtSea", c.BattleshipsAtSea);
         cmd.ExecuteNonQuery();
     }
 
@@ -658,28 +784,137 @@ static partial class Database
         cmd.ExecuteNonQuery();
     }
 
+    public static List<(string ModelName, int DefPct)> GetDefenseModels(long ownerId, long chatId, string category)
+    {
+        var result = new List<(string, int)>();
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "SELECT ModelName, DefPct FROM DefenseModels WHERE OwnerId=@id AND ChatId=@chat AND Category=@cat";
+        cmd.Parameters.AddWithValue("@id", ownerId);
+        cmd.Parameters.AddWithValue("@chat", chatId);
+        cmd.Parameters.AddWithValue("@cat", category);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            result.Add((reader.GetString(0), reader.GetInt32(1)));
+        }
+        return result;
+    }
+
+    public static void SetDefenseModel(long ownerId, long chatId, string category, string modelName, int defPct)
+    {
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = @"INSERT INTO DefenseModels(OwnerId, ChatId, Category, ModelName, DefPct)
+                             VALUES(@id, @chat, @cat, @model, @pct)
+                             ON CONFLICT(OwnerId, ChatId, Category, ModelName)
+                             DO UPDATE SET DefPct=@pct";
+        cmd.Parameters.AddWithValue("@id", ownerId);
+        cmd.Parameters.AddWithValue("@chat", chatId);
+        cmd.Parameters.AddWithValue("@cat", category);
+        cmd.Parameters.AddWithValue("@model", modelName);
+        cmd.Parameters.AddWithValue("@pct", Math.Clamp(defPct, 20, 100));
+        cmd.ExecuteNonQuery();
+    }
+
+    public static void ClearDefenseModels(long ownerId, long chatId, string category)
+    {
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "DELETE FROM DefenseModels WHERE OwnerId=@id AND ChatId=@chat AND Category=@cat";
+        cmd.Parameters.AddWithValue("@id", ownerId);
+        cmd.Parameters.AddWithValue("@chat", chatId);
+        cmd.Parameters.AddWithValue("@cat", category);
+        cmd.ExecuteNonQuery();
+    }
+
+    public static List<(string ModelName, long Count)> GetEquipmentBreakdownForReconcile(Country c, string resType)
+    {
+        var dict = new Dictionary<string, long>(StringComparer.Ordinal);
+        if (c == null) return new List<(string, long)>();
+        string category = resType switch { "tanks" => "Tanks", "planes" => "Planes", "bombers" => "Bombers", "boats" => "Boats", "submarines" => "Submarines", "battleships" => "Battleships", _ => "" };
+        if (string.IsNullOrEmpty(category)) return new List<(string, long)>();
+        long total = resType switch { "tanks" => c.Tanks, "planes" => c.Planes, "bombers" => c.Bombers, "boats" => c.Boats, "submarines" => c.Submarines, "battleships" => c.Battleships, _ => 0 };
+        if (total <= 0) return new List<(string, long)>();
+        var foreign = GetEquipmentModels(c.OwnerId, c.ChatId, category);
+        long sumForeign = foreign.Sum(x => x.Count);
+        long dom = Math.Max(0, total - sumForeign);
+        string defaultModel = resType switch
+        {
+            "tanks" => GetDefaultTankModel(c.Faction),
+            "planes" => GetDefaultPlaneModel(c.Faction),
+            "bombers" => GetDefaultBomberModel(c.Faction),
+            "boats" => GetDefaultBoatModel(c.Faction),
+            "submarines" => GetDefaultSubModel(c.Faction),
+            "battleships" => GetDefaultBattleshipModel(c.Faction),
+            _ => ""
+        };
+        if (dom > 0)
+        {
+            if (!dict.ContainsKey(defaultModel)) dict[defaultModel] = 0;
+            dict[defaultModel] += dom;
+        }
+        foreach (var f in foreign.Where(x => x.Count > 0))
+        {
+            if (!dict.ContainsKey(f.ModelName)) dict[f.ModelName] = 0;
+            dict[f.ModelName] += f.Count;
+        }
+        var list = new List<(string ModelName, long Count)>();
+        if (dict.ContainsKey(defaultModel))
+        {
+            list.Add((defaultModel, dict[defaultModel]));
+            dict.Remove(defaultModel);
+        }
+        foreach (var kv in dict) list.Add((kv.Key, kv.Value));
+        return list;
+    }
+
     public static string GetDefaultTankModel(Faction f) => f switch
     {
-        Faction.USSR => "T-34",
-        Faction.USA => "M4 Sherman",
+        Faction.USSR => "T-28",
+        Faction.USA => "M2 Medium",
         Faction.Reich => "Panzer III",
         _ => "تانک نامشخص"
     };
 
     public static string GetDefaultPlaneModel(Faction f) => f switch
     {
-        Faction.USSR => "Yak-9",
-        Faction.USA => "P-51 Mustang",
+        Faction.USSR => "I-16",
+        Faction.USA => "P-36",
         Faction.Reich => "Bf 109",
         _ => "جنگنده نامشخص"
     };
 
     public static string GetDefaultBomberModel(Faction f) => f switch
     {
-        Faction.USSR => "Pe-2",
+        Faction.USSR => "DB-3",
         Faction.USA => "B-17",
-        Faction.Reich => "Ju 88",
+        Faction.Reich => "He 111",
         _ => "بمب‌افکن نامشخص"
+    };
+
+    public static string GetDefaultBoatModel(Faction f) => f switch
+    {
+        Faction.USSR => "G-5",
+        Faction.USA => "PT Boat",
+        Faction.Reich => "S-Boot",
+        _ => "قایق نامشخص"
+    };
+
+    public static string GetDefaultSubModel(Faction f) => f switch
+    {
+        Faction.USSR => "S-class",
+        Faction.USA => "Gato",
+        Faction.Reich => "Type VIIC",
+        _ => "زیردریایی نامشخص"
+    };
+
+    public static string GetDefaultBattleshipModel(Faction f) => f switch
+    {
+        Faction.USSR => "Sovetsky Soyuz",
+        Faction.USA => "Iowa",
+        Faction.Reich => "Bismarck",
+        _ => "نبردناو نامشخص"
     };
 
     public static void UpdateCountryName(long ownerId, long chatId, string newName)
@@ -842,7 +1077,9 @@ static partial class Database
         using var cmd = con.CreateCommand();
         cmd.CommandText = @"UPDATE Countries SET Money=@money, Iron=@iron, Population=@pop, Soldiers=@sol,
                             RecruitmentRate=@rr, Welfare=@wf, Tanks=@tanks, Planes=@planes, Bombers=@bombers, AntiAir=@antiair,
-                            AirDefStrategy=@ads, AirDefTactic=@adt, Besieged=@bsg, Cities=@cities, DefenseWins=@dwins, TaxRate=@tax, DefTankPct=@dtp, DefSoldierPct=@dsp, DefFighterPct=@dfp
+                            AirDefStrategy=@ads, AirDefTactic=@adt, Besieged=@bsg, Cities=@cities, DefenseWins=@dwins, TaxRate=@tax, DefTankPct=@dtp, DefSoldierPct=@dsp, DefFighterPct=@dfp,
+                            Boats=@boats, Submarines=@subs, Battleships=@bships, BattleshipDamage=@bdmg, DefenseBoats=@dbboats, DefenseSubmarines=@dbsubs,
+                            BoatsFuel=@bfuel, SubmarinesFuel=@sfuel, BoatsAtSea=@bsea, SubmarinesAtSea=@ssea, BattleshipsAtSea=@bssea
                             WHERE OwnerId=@id AND ChatId=@chat";
         cmd.Parameters.AddWithValue("@money", c.Money);
         cmd.Parameters.AddWithValue("@iron", c.Iron);
@@ -863,6 +1100,17 @@ static partial class Database
         cmd.Parameters.AddWithValue("@dtp", c.DefTankPct);
         cmd.Parameters.AddWithValue("@dsp", c.DefSoldierPct);
         cmd.Parameters.AddWithValue("@dfp", c.DefFighterPct);
+        cmd.Parameters.AddWithValue("@boats", c.Boats);
+        cmd.Parameters.AddWithValue("@subs", c.Submarines);
+        cmd.Parameters.AddWithValue("@bships", c.Battleships);
+        cmd.Parameters.AddWithValue("@bdmg", c.BattleshipDamage);
+        cmd.Parameters.AddWithValue("@dbboats", c.DefenseBoats);
+        cmd.Parameters.AddWithValue("@dbsubs", c.DefenseSubmarines);
+        cmd.Parameters.AddWithValue("@bfuel", c.BoatsFuel);
+        cmd.Parameters.AddWithValue("@sfuel", c.SubmarinesFuel);
+        cmd.Parameters.AddWithValue("@bsea", c.BoatsAtSea);
+        cmd.Parameters.AddWithValue("@ssea", c.SubmarinesAtSea);
+        cmd.Parameters.AddWithValue("@bssea", c.BattleshipsAtSea);
         cmd.Parameters.AddWithValue("@id", c.OwnerId);
         cmd.Parameters.AddWithValue("@chat", c.ChatId);
         cmd.ExecuteNonQuery();
@@ -1211,30 +1459,126 @@ static partial class Database
     {
         var c = GetCountry(ownerId, chatId);
         if (c == null) return;
-        long dt = c.DefenseTanks;
-        long ds = c.DefenseSoldiers;
-        long df = c.DefenseFighters;
-        if (c.DefTankPct > 0) dt = (long)Math.Ceiling(c.Tanks * (c.DefTankPct / 100.0));
-        else if (c.Tanks > 0 && c.DefenseTanks >= c.Tanks) { c.DefTankPct = 100; dt = c.Tanks; }
+
+        //  – per-model defense calculation
+        long dt = 0, ds = 0, df = 0;
+
+        // Tanks – check per-model defense
+        var tankDefModels = GetDefenseModels(ownerId, chatId, "Tanks");
+        if (tankDefModels.Count > 0)
+        {
+            var breakdown = GetEquipmentBreakdownForReconcile(c, "tanks");
+            foreach (var (model, count) in breakdown)
+            {
+                int pct = 100;
+                var dm = tankDefModels.FirstOrDefault(x => x.ModelName == model);
+                if (dm != default) pct = dm.DefPct;
+                else if (c.DefTankPct > 0) pct = c.DefTankPct;
+                dt += (long)Math.Ceiling(count * Math.Clamp(pct, 20, 100) / 100.0);
+            }
+        }
+        else
+        {
+            if (c.DefTankPct > 0) dt = (long)Math.Ceiling(c.Tanks * (c.DefTankPct / 100.0));
+            else if (c.Tanks > 0 && c.DefenseTanks >= c.Tanks) { c.DefTankPct = 100; dt = c.Tanks; }
+            else dt = c.DefenseTanks;
+        }
+
+        // Soldiers – single
         if (c.DefSoldierPct > 0) ds = (long)Math.Ceiling(c.Soldiers * (c.DefSoldierPct / 100.0));
         else if (c.Soldiers > 0 && c.DefenseSoldiers >= c.Soldiers) { c.DefSoldierPct = 100; ds = c.Soldiers; }
-        if (c.DefFighterPct > 0) df = (long)Math.Ceiling(c.Planes * (c.DefFighterPct / 100.0));
-        else if (c.Planes > 0 && c.DefenseFighters >= c.Planes) { c.DefFighterPct = 100; df = c.Planes; }
+        else ds = c.DefenseSoldiers;
+
+        // Planes (fighters) – per-model
+        var planeDefModels = GetDefenseModels(ownerId, chatId, "Planes");
+        if (planeDefModels.Count > 0)
+        {
+            var breakdown = GetEquipmentBreakdownForReconcile(c, "planes");
+            foreach (var (model, count) in breakdown)
+            {
+                int pct = 100;
+                var dm = planeDefModels.FirstOrDefault(x => x.ModelName == model);
+                if (dm != default) pct = dm.DefPct;
+                else if (c.DefFighterPct > 0) pct = c.DefFighterPct;
+                df += (long)Math.Ceiling(count * Math.Clamp(pct, 20, 100) / 100.0);
+            }
+        }
+        else
+        {
+            if (c.DefFighterPct > 0) df = (long)Math.Ceiling(c.Planes * (c.DefFighterPct / 100.0));
+            else if (c.Planes > 0 && c.DefenseFighters >= c.Planes) { c.DefFighterPct = 100; df = c.Planes; }
+            else df = c.DefenseFighters;
+        }
+
         long minTanks = (long)Math.Ceiling(c.Tanks * 0.2);
         long minSoldiers = (long)Math.Ceiling(c.Soldiers * 0.2);
         long minFighters = (long)Math.Ceiling(c.Planes * 0.2);
+        long minBoats = (long)Math.Ceiling(c.Boats * 0.2);
+        long minSubs = (long)Math.Ceiling(c.Submarines * 0.2);
         dt = Math.Clamp(dt, minTanks, c.Tanks);
         ds = Math.Clamp(ds, minSoldiers, c.Soldiers);
         df = Math.Clamp(df, minFighters, c.Planes);
-        if (dt != c.DefenseTanks || ds != c.DefenseSoldiers || df != c.DefenseFighters || c.DefTankPct == 0)
+
+        //  – naval defense per-model
+        long db = 0, dsb = 0;
+        var boatDefModels = GetDefenseModels(ownerId, chatId, "Boats");
+        if (boatDefModels.Count > 0)
+        {
+            var breakdown = GetEquipmentBreakdownForReconcile(c, "boats");
+            foreach (var (model, count) in breakdown)
+            {
+                int pct = 100;
+                var dm = boatDefModels.FirstOrDefault(x => x.ModelName == model);
+                if (dm != default) pct = dm.DefPct;
+                else if (c.DefTankPct > 0) pct = c.DefTankPct;
+                db += (long)Math.Ceiling(count * Math.Clamp(pct, 20, 100) / 100.0);
+            }
+        }
+        else
+        {
+            db = c.DefenseBoats > 0 ? c.DefenseBoats : minBoats;
+        }
+        var subDefModels = GetDefenseModels(ownerId, chatId, "Submarines");
+        if (subDefModels.Count > 0)
+        {
+            var breakdown = GetEquipmentBreakdownForReconcile(c, "submarines");
+            foreach (var (model, count) in breakdown)
+            {
+                int pct = 100;
+                var dm = subDefModels.FirstOrDefault(x => x.ModelName == model);
+                if (dm != default) pct = dm.DefPct;
+                else if (c.DefTankPct > 0) pct = c.DefTankPct;
+                dsb += (long)Math.Ceiling(count * Math.Clamp(pct, 20, 100) / 100.0);
+            }
+        }
+        else
+        {
+            dsb = c.DefenseSubmarines > 0 ? c.DefenseSubmarines : minSubs;
+        }
+        db = Math.Clamp(db, minBoats, c.Boats);
+        dsb = Math.Clamp(dsb, minSubs, c.Submarines);
+
+        bool needUpdate = dt != c.DefenseTanks || ds != c.DefenseSoldiers || df != c.DefenseFighters || db != c.DefenseBoats || dsb != c.DefenseSubmarines || c.DefTankPct == 0;
+        if (needUpdate)
         {
             c.DefenseTanks = dt;
             c.DefenseSoldiers = ds;
             c.DefenseFighters = df;
+            c.DefenseBoats = db;
+            c.DefenseSubmarines = dsb;
             if (c.DefTankPct == 0) c.DefTankPct = 100;
             if (c.DefSoldierPct == 0) c.DefSoldierPct = 100;
             if (c.DefFighterPct == 0) c.DefFighterPct = 100;
             UpdateDefenseFull(ownerId, chatId, dt, ds, df, c.DefenseStrategy, c.DefenseTactic, c.DefTankPct, c.DefSoldierPct, c.DefFighterPct);
+            // Also update naval defence via full update
+            using var con2 = OpenCon();
+            using var cmd2 = con2.CreateCommand();
+            cmd2.CommandText = "UPDATE Countries SET DefenseBoats=@db, DefenseSubmarines=@dsb WHERE OwnerId=@oid AND ChatId=@cid";
+            cmd2.Parameters.AddWithValue("@db", db);
+            cmd2.Parameters.AddWithValue("@dsb", dsb);
+            cmd2.Parameters.AddWithValue("@oid", ownerId);
+            cmd2.Parameters.AddWithValue("@cid", chatId);
+            cmd2.ExecuteNonQuery();
         }
     }
 
@@ -1242,12 +1586,66 @@ static partial class Database
 
     public static List<Country> GetCountriesByChatId(long chatId)
     {
-        return GetAllCountries().Where(c => c.ChatId == chatId).ToList();
+        var list = new List<Country>();
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = $"SELECT {COUNTRY_COLS} FROM Countries WHERE ChatId=@cid";
+        cmd.Parameters.AddWithValue("@cid", chatId);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) list.Add(ReadCountry(reader));
+        return list;
     }
 
     public static List<long> GetUserChatIds(long ownerId)
     {
-        return GetAllCountries().Where(c => c.OwnerId == ownerId).Select(c => c.ChatId).Distinct().ToList();
+        var list = new List<long>();
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "SELECT DISTINCT ChatId FROM Countries WHERE OwnerId=@oid";
+        cmd.Parameters.AddWithValue("@oid", ownerId);
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) list.Add(r.GetInt64(0));
+        return list;
+    }
+
+    public static List<Country> GetAttackableTargets(long chatId, long attackerId)
+    {
+        var list = new List<Country>();
+        using var con = OpenCon();
+
+        // Get alliance id in same connection (optimized, no extra OpenCon)
+        long aid = 0;
+        using (var cmdAid = con.CreateCommand())
+        {
+            cmdAid.CommandText = "SELECT AllianceId FROM AllianceMembers WHERE ChatId=@cid AND UserId=@uid LIMIT 1";
+            cmdAid.Parameters.AddWithValue("@cid", chatId);
+            cmdAid.Parameters.AddWithValue("@uid", attackerId);
+            var v = cmdAid.ExecuteScalar();
+            if (v != null && v != DBNull.Value) aid = Convert.ToInt64(v);
+        }
+
+        using var cmd = con.CreateCommand();
+        if (aid != 0)
+        {
+            // Optimized single query: exclude allies directly in SQL, no HashSet needed
+            cmd.CommandText = $"SELECT {COUNTRY_COLS} FROM Countries WHERE ChatId=@cid AND OwnerId!=@attacker AND OwnerId NOT IN (SELECT UserId FROM AllianceMembers WHERE AllianceId=@aid)";
+            cmd.Parameters.AddWithValue("@cid", chatId);
+            cmd.Parameters.AddWithValue("@attacker", attackerId);
+            cmd.Parameters.AddWithValue("@aid", aid);
+        }
+        else
+        {
+            cmd.CommandText = $"SELECT {COUNTRY_COLS} FROM Countries WHERE ChatId=@cid AND OwnerId!=@attacker";
+            cmd.Parameters.AddWithValue("@cid", chatId);
+            cmd.Parameters.AddWithValue("@attacker", attackerId);
+        }
+
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add(ReadCountry(reader));
+        }
+        return list;
     }
 
     public static List<Alliance> GetAlliancesByChatId(long chatId)
@@ -1437,13 +1835,14 @@ static partial class Database
     {
         using var con = OpenCon();
         using var cmd = con.CreateCommand();
-        cmd.CommandText = @"INSERT INTO Transfers(ChatId, AllianceId, SenderId, ReceiverId, ResourceType, Amount, ArriveAtMs, Notified)
-                            VALUES(@cid, @aid, @sid, @rid, @res, @amt, @ms, @notif); SELECT last_insert_rowid();";
+        cmd.CommandText = @"INSERT INTO Transfers(ChatId, AllianceId, SenderId, ReceiverId, ResourceType, ModelName, Amount, ArriveAtMs, Notified)
+                            VALUES(@cid, @aid, @sid, @rid, @res, @model, @amt, @ms, @notif); SELECT last_insert_rowid();";
         cmd.Parameters.AddWithValue("@cid", t.ChatId);
         cmd.Parameters.AddWithValue("@aid", t.AllianceId);
         cmd.Parameters.AddWithValue("@sid", t.SenderId);
         cmd.Parameters.AddWithValue("@rid", t.ReceiverId);
         cmd.Parameters.AddWithValue("@res", t.ResourceType);
+        cmd.Parameters.AddWithValue("@model", t.ModelName ?? "");
         cmd.Parameters.AddWithValue("@amt", t.Amount);
         cmd.Parameters.AddWithValue("@ms", t.ArriveAtMs);
         cmd.Parameters.AddWithValue("@notif", t.Notified);
@@ -1455,10 +1854,29 @@ static partial class Database
         var list = new List<Transfer>();
         using var con = OpenCon();
         using var cmd = con.CreateCommand();
-        cmd.CommandText = "SELECT Id, ChatId, AllianceId, SenderId, ReceiverId, ResourceType, Amount, ArriveAtMs, Notified FROM Transfers";
+        cmd.CommandText = "SELECT Id, ChatId, AllianceId, SenderId, ReceiverId, ResourceType, ModelName, Amount, ArriveAtMs, Notified FROM Transfers";
         using var r = cmd.ExecuteReader();
         while (r.Read())
         {
+            // Handle both old schema (no ModelName) and new
+            string modelName = "";
+            long amount;
+            long arrive;
+            int notified;
+            if (r.FieldCount >= 10)
+            {
+                modelName = r.IsDBNull(6) ? "" : r.GetString(6);
+                amount = r.GetInt64(7);
+                arrive = r.GetInt64(8);
+                notified = r.GetInt32(9);
+            }
+            else
+            {
+                // fallback for old DB without ModelName column during transition
+                amount = r.GetInt64(6);
+                arrive = r.GetInt64(7);
+                notified = r.GetInt32(8);
+            }
             list.Add(new Transfer
             {
                 Id = r.GetInt64(0),
@@ -1467,9 +1885,10 @@ static partial class Database
                 SenderId = r.GetInt64(3),
                 ReceiverId = r.GetInt64(4),
                 ResourceType = r.GetString(5),
-                Amount = r.GetInt64(6),
-                ArriveAtMs = r.GetInt64(7),
-                Notified = r.GetInt32(8)
+                ModelName = modelName,
+                Amount = amount,
+                ArriveAtMs = arrive,
+                Notified = notified
             });
         }
         return list;
@@ -1619,22 +2038,7 @@ static partial class Database
     public static void CancelDeploymentForces(Deployment d)
     {
         var contribs = GetDeploymentContributors(d.Id);
-        if (d.Type == "Defensive")
-        {
-            var tcDef = GetCountry(d.TargetUserId, d.ChatId);
-            if (tcDef != null)
-            {
-                tcDef.Tanks = Math.Max(0, tcDef.Tanks - d.Tanks);
-                tcDef.Soldiers = Math.Max(0, tcDef.Soldiers - d.Soldiers);
-                tcDef.Planes = Math.Max(0, tcDef.Planes - d.Fighters);
-                tcDef.Bombers = Math.Max(0, tcDef.Bombers - d.Bombers);
-                tcDef.DefenseTanks = Math.Max(0, tcDef.DefenseTanks - d.Tanks);
-                tcDef.DefenseSoldiers = Math.Max(0, tcDef.DefenseSoldiers - d.Soldiers);
-                tcDef.DefenseFighters = Math.Max(0, tcDef.DefenseFighters - d.Fighters);
-                UpdateCountryFull(tcDef);
-                ReconcileDefense(tcDef.OwnerId, tcDef.ChatId);
-            }
-        }
+        //  – defensive no longer touches target assets
         foreach (var c in contribs)
         {
             var cc = GetCountry(c.UserId, d.ChatId);
@@ -1803,6 +2207,262 @@ static partial class Database
         return null;
     }
 
+    // =====  – Naval Invasions & Shields & Fuel =====
+    public static long AddNavalInvasion(NavalInvasion inv)
+    {
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = @"INSERT INTO NavalInvasions(ChatId,AttackerId,DefenderId,Boats,Submarines,Battleships,BoatModels,SubModels,BattleshipModels,Strategy,Tactic,CreatedAtMs,ArriveAtMs,Processed,AttackerName,DefenderName)
+                            VALUES(@cid,@aid,@did,@boats,@subs,@bships,@bmodels,@smodels,@bsmodels,@strat,@tac,@cMs,@aMs,0,@aName,@dName); SELECT last_insert_rowid();";
+        cmd.Parameters.AddWithValue("@cid", inv.ChatId);
+        cmd.Parameters.AddWithValue("@aid", inv.AttackerId);
+        cmd.Parameters.AddWithValue("@did", inv.DefenderId);
+        cmd.Parameters.AddWithValue("@boats", inv.Boats);
+        cmd.Parameters.AddWithValue("@subs", inv.Submarines);
+        cmd.Parameters.AddWithValue("@bships", inv.Battleships);
+        cmd.Parameters.AddWithValue("@bmodels", inv.BoatModels);
+        cmd.Parameters.AddWithValue("@smodels", inv.SubModels);
+        cmd.Parameters.AddWithValue("@bsmodels", inv.BattleshipModels);
+        cmd.Parameters.AddWithValue("@strat", inv.Strategy);
+        cmd.Parameters.AddWithValue("@tac", inv.Tactic);
+        cmd.Parameters.AddWithValue("@cMs", inv.CreatedAtMs);
+        cmd.Parameters.AddWithValue("@aMs", inv.ArriveAtMs);
+        cmd.Parameters.AddWithValue("@aName", inv.AttackerName ?? "");
+        cmd.Parameters.AddWithValue("@dName", inv.DefenderName ?? "");
+        return Convert.ToInt64(cmd.ExecuteScalar());
+    }
+
+    public static List<NavalInvasion> GetPendingNavalInvasions(long nowMs)
+    {
+        var list = new List<NavalInvasion>();
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "SELECT Id,ChatId,AttackerId,DefenderId,Boats,Submarines,Battleships,BoatModels,SubModels,BattleshipModels,Strategy,Tactic,CreatedAtMs,ArriveAtMs,Processed,AttackerName,DefenderName FROM NavalInvasions WHERE Processed=0 AND ArriveAtMs<=@now";
+        cmd.Parameters.AddWithValue("@now", nowMs);
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            list.Add(new NavalInvasion
+            {
+                Id = r.GetInt64(0),
+                ChatId = r.GetInt64(1),
+                AttackerId = r.GetInt64(2),
+                DefenderId = r.GetInt64(3),
+                Boats = r.GetInt64(4),
+                Submarines = r.GetInt64(5),
+                Battleships = r.GetInt64(6),
+                BoatModels = r.IsDBNull(7) ? "" : r.GetString(7),
+                SubModels = r.IsDBNull(8) ? "" : r.GetString(8),
+                BattleshipModels = r.IsDBNull(9) ? "" : r.GetString(9),
+                Strategy = r.GetInt32(10),
+                Tactic = r.GetInt32(11),
+                CreatedAtMs = r.GetInt64(12),
+                ArriveAtMs = r.GetInt64(13),
+                Processed = r.GetInt32(14),
+                AttackerName = r.IsDBNull(15) ? "" : r.GetString(15),
+                DefenderName = r.IsDBNull(16) ? "" : r.GetString(16)
+            });
+        }
+        return list;
+    }
+
+    public static void MarkNavalInvasionProcessed(long id)
+    {
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "UPDATE NavalInvasions SET Processed=1 WHERE Id=@id";
+        cmd.Parameters.AddWithValue("@id", id);
+        cmd.ExecuteNonQuery();
+    }
+
+    public static void DeleteNavalInvasion(long id)
+    {
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "DELETE FROM NavalInvasions WHERE Id=@id";
+        cmd.Parameters.AddWithValue("@id", id);
+        cmd.ExecuteNonQuery();
+    }
+
+    public static List<NavalInvasion> GetActiveNavalInvasionsByAttacker(long attackerId, long chatId)
+    {
+        var list = new List<NavalInvasion>();
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "SELECT Id,ChatId,AttackerId,DefenderId,Boats,Submarines,Battleships FROM NavalInvasions WHERE AttackerId=@aid AND ChatId=@cid AND Processed=0";
+        cmd.Parameters.AddWithValue("@aid", attackerId);
+        cmd.Parameters.AddWithValue("@cid", chatId);
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            list.Add(new NavalInvasion { Id = r.GetInt64(0), ChatId = r.GetInt64(1), AttackerId = r.GetInt64(2), DefenderId = r.GetInt64(3), Boats = r.GetInt64(4), Submarines = r.GetInt64(5), Battleships = r.GetInt64(6) });
+        }
+        return list;
+    }
+
+    // Attack Shields – 5 attacks => 16h shield
+    public static long GetAttackShieldUntilMs(long ownerId, long chatId)
+    {
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "SELECT ShieldUntilMs FROM AttackShields WHERE OwnerId=@o AND ChatId=@c";
+        cmd.Parameters.AddWithValue("@o", ownerId);
+        cmd.Parameters.AddWithValue("@c", chatId);
+        var v = cmd.ExecuteScalar();
+        if (v == null || v == DBNull.Value) return 0;
+        return Convert.ToInt64(v);
+    }
+
+    public static bool IsAttackShieldActive(long ownerId, long chatId)
+    {
+        long until = GetAttackShieldUntilMs(ownerId, chatId);
+        if (until == 0) return false;
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (now >= until)
+        {
+            // clear expired
+            using var con = OpenCon();
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = "DELETE FROM AttackShields WHERE OwnerId=@o AND ChatId=@c";
+            cmd.Parameters.AddWithValue("@o", ownerId);
+            cmd.Parameters.AddWithValue("@c", chatId);
+            cmd.ExecuteNonQuery();
+            return false;
+        }
+        return true;
+    }
+
+    public static void AddAttackShieldHit(long defenderId, long chatId)
+    {
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        using var con = OpenCon();
+        // Get current count
+        using var cmdSel = con.CreateCommand();
+        cmdSel.CommandText = "SELECT AttackCount, ShieldUntilMs FROM AttackShields WHERE OwnerId=@o AND ChatId=@c";
+        cmdSel.Parameters.AddWithValue("@o", defenderId);
+        cmdSel.Parameters.AddWithValue("@c", chatId);
+        int count = 0;
+        long existingUntil = 0;
+        using (var r = cmdSel.ExecuteReader())
+        {
+            if (r.Read())
+            {
+                count = r.IsDBNull(0) ? 0 : r.GetInt32(0);
+                existingUntil = r.IsDBNull(1) ? 0 : r.GetInt64(1);
+            }
+        }
+        // If shield active, don't count? But spec says 5 attacks => 16h shield, so after shield we reset
+        if (existingUntil > now) return; // currently shielded, ignore
+
+        // Check if last attack was more than 24h ago, reset count
+        long lastMs = 0;
+        using (var cmdLast = con.CreateCommand())
+        {
+            cmdLast.CommandText = "SELECT LastAttackMs FROM AttackShields WHERE OwnerId=@o AND ChatId=@c";
+            cmdLast.Parameters.AddWithValue("@o", defenderId);
+            cmdLast.Parameters.AddWithValue("@c", chatId);
+            var v = cmdLast.ExecuteScalar();
+            if (v != null && v != DBNull.Value) lastMs = Convert.ToInt64(v);
+        }
+        if (lastMs > 0 && now - lastMs > 24 * 3600_000L)
+            count = 0;
+
+        count++;
+
+        if (count >= 5)
+        {
+            long shieldUntil = now + 16 * 3600_000L;
+            using var cmdUp = con.CreateCommand();
+            cmdUp.CommandText = @"INSERT INTO AttackShields(OwnerId,ChatId,ShieldUntilMs,AttackCount,LastAttackMs) VALUES(@o,@c,@until,0,@now)
+                                  ON CONFLICT(OwnerId,ChatId) DO UPDATE SET ShieldUntilMs=@until, AttackCount=0, LastAttackMs=@now";
+            cmdUp.Parameters.AddWithValue("@o", defenderId);
+            cmdUp.Parameters.AddWithValue("@c", chatId);
+            cmdUp.Parameters.AddWithValue("@until", shieldUntil);
+            cmdUp.Parameters.AddWithValue("@now", now);
+            cmdUp.ExecuteNonQuery();
+        }
+        else
+        {
+            using var cmdUp = con.CreateCommand();
+            cmdUp.CommandText = @"INSERT INTO AttackShields(OwnerId,ChatId,ShieldUntilMs,AttackCount,LastAttackMs) VALUES(@o,@c,0,@cnt,@now)
+                                  ON CONFLICT(OwnerId,ChatId) DO UPDATE SET AttackCount=@cnt, LastAttackMs=@now";
+            cmdUp.Parameters.AddWithValue("@o", defenderId);
+            cmdUp.Parameters.AddWithValue("@c", chatId);
+            cmdUp.Parameters.AddWithValue("@cnt", count);
+            cmdUp.Parameters.AddWithValue("@now", now);
+            cmdUp.ExecuteNonQuery();
+        }
+    }
+
+    public static void ClearAttackShield(long ownerId, long chatId)
+    {
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "DELETE FROM AttackShields WHERE OwnerId=@o AND ChatId=@c";
+        cmd.Parameters.AddWithValue("@o", ownerId);
+        cmd.Parameters.AddWithValue("@c", chatId);
+        cmd.ExecuteNonQuery();
+    }
+
+    // Boat fuel
+    public static int GetBoatFuelPct(long ownerId, long chatId)
+    {
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "SELECT FuelPct FROM BoatFuelStates WHERE OwnerId=@o AND ChatId=@c";
+        cmd.Parameters.AddWithValue("@o", ownerId);
+        cmd.Parameters.AddWithValue("@c", chatId);
+        var v = cmd.ExecuteScalar();
+        if (v == null || v == DBNull.Value) return 100;
+        return Convert.ToInt32(v);
+    }
+
+    public static void SetBoatFuelPct(long ownerId, long chatId, int pct)
+    {
+        pct = Math.Clamp(pct, 0, 100);
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = @"INSERT INTO BoatFuelStates(OwnerId,ChatId,FuelPct) VALUES(@o,@c,@pct)
+                            ON CONFLICT(OwnerId,ChatId) DO UPDATE SET FuelPct=@pct";
+        cmd.Parameters.AddWithValue("@o", ownerId);
+        cmd.Parameters.AddWithValue("@c", chatId);
+        cmd.Parameters.AddWithValue("@pct", pct);
+        cmd.ExecuteNonQuery();
+    }
+
+    public static long GetNavalCooldownUntilMs(long ownerId, long chatId)
+    {
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "SELECT CooldownUntilMs FROM NavalBoatCooldowns WHERE OwnerId=@o AND ChatId=@c";
+        cmd.Parameters.AddWithValue("@o", ownerId);
+        cmd.Parameters.AddWithValue("@c", chatId);
+        var v = cmd.ExecuteScalar();
+        if (v == null || v == DBNull.Value) return 0;
+        return Convert.ToInt64(v);
+    }
+
+    public static void SetNavalCooldown(long ownerId, long chatId, long untilMs)
+    {
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = @"INSERT INTO NavalBoatCooldowns(OwnerId,ChatId,CooldownUntilMs) VALUES(@o,@c,@u)
+                            ON CONFLICT(OwnerId,ChatId) DO UPDATE SET CooldownUntilMs=@u";
+        cmd.Parameters.AddWithValue("@o", ownerId);
+        cmd.Parameters.AddWithValue("@c", chatId);
+        cmd.Parameters.AddWithValue("@u", untilMs);
+        cmd.ExecuteNonQuery();
+    }
+
+    public static void ClearNavalCooldown(long ownerId, long chatId)
+    {
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "DELETE FROM NavalBoatCooldowns WHERE OwnerId=@o AND ChatId=@c";
+        cmd.Parameters.AddWithValue("@o", ownerId);
+        cmd.Parameters.AddWithValue("@c", chatId);
+        cmd.ExecuteNonQuery();
+    }
 
 
     public static void SetGroupLockExemption(long chatId, bool exempt)
@@ -1851,7 +2511,7 @@ static partial class Database
 // ============================================================
 partial class Program
 {
-    const string BOT_TOKEN = "8604968567:AAF7qWHrA0jv3_4edAFhPnz2uANQURbBkos";
+    static readonly string BOT_TOKEN = Environment.GetEnvironmentVariable("BOT_TOKEN") ?? "8604968567:AAF7qWHrA0jv3_4edAFhPnz2uANQURbBkos";
     const long OWNER_ID = 8248899977L;
     static TelegramBotClient bot = null!;
     static readonly ConcurrentDictionary<long, UserSession> sessions = new();
@@ -1913,61 +2573,157 @@ partial class Program
     //  متن راهنمای کامل — FIX(4)
     //  در گروه و پیوی یکسان استفاده می‌شود.
     // ============================================================
-    const string HelpText =
-        "📘 <b>راهنمای کامل آلیس</b>\n" +
-        "برای اجرای هر بخش، فقط کافی است دستور مربوطه را (در گروه) بنویسید.\n" +
-        "بعضی بخش‌ها (حمله، ترنسفر، صف‌آرایی، وضعیت دفاع) برای تنظیم دقیق به <b>پیوی ربات</b> منتقل می‌شوند.\n" +
-        "برای لغو هر عملیات نیمه‌کاره، کلمهٔ «<b>لغو</b>» را بنویسید.\n" +
-        "──────────────\n\n" +
+        const string HelpText =
+        "📘 <b>راهنمای کامل آلیس</b>
+" +
+        "برای اجرای هر بخش، فقط کافی است دستور مربوطه را (در گروه) بنویسید.
+" +
+        "بعضی بخش‌ها (حمله، ترنسفر، صف‌آرایی، وضعیت دفاع) برای تنظیم دقیق به <b>پیوی ربات</b> منتقل می‌شوند.
+" +
+        "برای لغو هر عملیات نیمه‌کاره، کلمهٔ «<b>لغو</b>» را بنویسید.
+" +
+        "──────────────
 
-        "🌍 <b>شروع و مدیریت کشور</b>\n" +
-        "• <b>انتخاب کشور</b> — ساخت کشور جدید (انتخاب فکشن + نام).\n" +
-        "• <b>دارایی</b> (یا «کشورم») — مشاهدهٔ کامل وضعیت اقتصادی و نظامی کشور.\n" +
-        "• <b>مان پاور</b> — قدرت کل کشور و تفکیک عوامل مؤثر بر آن.\n" +
-        "• <b>تغییر اسم</b> — تغییر نام کشور.\n" +
-        "• <b>تغییر پرچم</b> — ارسال عکس برای پرچم جدید.\n" +
-        "• <b>انصراف</b> — حذف کامل کشور در این گپ (۲۴ ساعت قفل ساخت مجدد).\n\n" +
+" +
 
-        "🏗 <b>اقتصاد و توسعه</b>\n" +
-        "• <b>اقتصاد</b> (یا «ساختمان») — ارتقای 🏭 کارخانه، ⚓ بندر و ⛏️ معدن برای افزایش درآمد.\n" +
-        "• <b>مالیات</b> — تنظیم نرخ مالیات (۰ تا ۱۰۰٪). مالیات بالاتر = درآمد بیشتر ولی رفاه کمتر.\n" +
-        "• <b>آموزش سرباز</b> — تنظیم نرخ سربازگیری (۰ تا ۱۰). نرخ بالاتر = سرباز بیشتر ولی رفاه کمتر.\n" +
-        "• <b>ترید</b> — تبدیل رویال‌کوین به پول (هر ۱ رویال = ۱۰K پول).\n\n" +
+        "🌍 <b>شروع و مدیریت کشور</b>
+" +
+        "• <b>انتخاب کشور</b> — ساخت کشور جدید (انتخاب فکشن 🇺🇸/☭/⚫ + نام).
+" +
+        "  ❌ نام‌های مشابه بالای 90% ممنوع: «این نام خیلی شبیه به نام موجود است!!»
+" +
+        "• <b>دارایی</b> (یا «کشورم») — مشاهدهٔ کامل اقتصادی، نظامی و دریایی.
+" +
+        "• <b>مان پاور</b> — قدرت کل + تفکیک عوامل.
+" +
+        "• <b>تغییر اسم</b> — تغییر نام کشور (بررسی شباهت 90%).
+" +
+        "• <b>تغییر پرچم</b> — ارسال عکس.
+" +
+        "• <b>انصراف</b> — حذف کامل کشور (۲۴ ساعت قفل ساخت مجدد).
 
-        "⚔️ <b>ساخت ارتش</b>\n" +
-        "• <b>ساخت تانک</b> — خرید تانک (نیاز به پول + آهن).\n" +
-        "• <b>ساخت هواپیما</b> — خرید جنگنده و بمب‌افکن.\n" +
-        "• <b>ساخت بمب افکن</b> — خرید اختصاصی بمب‌افکن.\n" +
-        "• <b>پدافند</b> — خرید توپ ضدهوایی برای دفاع در برابر حملهٔ هوایی.\n\n" +
+" +
 
-        "🛡 <b>دفاع</b>\n" +
-        "• <b>وضعیت دفاع</b> — مشاهده و تنظیم نیروی دفاعی، استراتژی/تاکتیک زمینی و دفاع هوایی (در پیوی).\n" +
-        "  حداقل ۲۰٪ از هر نیرو همیشه به دفاع اختصاص می‌یابد.\n\n" +
+        "🏗 <b>اقتصاد و توسعه</b>
+" +
+        "• <b>اقتصاد</b> / ساختمان — ارتقای 🏭 کارخانه، ⚓ بندر و ⛏️ معدن.
+" +
+        "• بندر سطح 4 لازم برای نبردناو (Bismarck/Iowa/Sovetsky Soyuz) حداکثر 3 عدد.
+" +
+        "• <b>مالیات</b> ۰-۱۰۰٪، <b>آموزش سرباز</b> ۰-۱۰، <b>ترید</b> 1 رویال=10K پول.
 
-        "🗡 <b>حمله</b>\n" +
-        "• <b>حمله</b> — انتخاب هدف در پیوی، سپس استراتژی، تاکتیک و تعداد نیروی زمینی/هوایی.\n" +
-        "  ⏳ پس از هر آپدیت دارایی، حمله تا ۳۰ دقیقه قفل است.\n" +
-        "  🛡 کشورهای تازه‌ساخت تا ۴۸ ساعت سپر دارند و قابل حمله نیستند.\n\n" +
+" +
 
-        "🤝 <b>اتحادها</b>\n" +
-        "• <b>ساخت اتحاد</b> — تاسیس اتحاد (نام + پرچم). شما رهبر می‌شوید.\n" +
-        "• <b>ایجاد درخواست عضویت</b> — روی پیام بازیکن ریپلای کنید تا دعوت شود (فقط رهبر).\n" +
-        "• <b>وضعیت اتحاد</b> — رده‌بندی اعضا و مان‌پاور اتحاد.\n" +
-        "• <b>لیست اتحاد ها</b> — همهٔ اتحادهای گروه بر اساس قدرت.\n" +
-        "• <b>حذف N</b> — اخراج عضو شمارهٔ N (فقط رهبر).\n" +
-        "• <b>خروج از اتحاد</b> — خروج عضو عادی.\n" +
-        "• <b>انحلال اتحاد</b> — انحلال کامل توسط رهبر.\n\n" +
+        "⚔️ <b>ساخت ارتش — چندمدلی</b>
+" +
+        "• هر کشور چندین مدل تجهیزات دارد و حتی با تغییر فکشن حفظ می‌شود.
+" +
+        "• <b>ساخت تانک</b> — M2 Medium 🇺🇸 / T-28 ☭ / Panzer III ⚫ (هر ۵ عدد).
+" +
+        "• <b>ساخت هواپیما</b> — P-36 / I-16 / Bf 109 + بمب‌افکن B-17 / DB-3 / He 111.
+" +
+        "• <b>پدافند</b> — توپ 76mm ضد هوایی.
+" +
+        "• در حمله و دفاع می‌توانید برای هر مدل جداگانه تعداد / درصد تعیین کنید.
+" +
+        "• موتور جنگ ترکیب وزنی مدل‌ها با حداقل 2% تاثیر + امتیاز تنوع تا 8% و گزارش هوشمند پویا.
 
-        "🚚 <b>عملیات مشترک اتحاد</b>\n" +
-        "• <b>ترنسفر</b> — ارسال پول/آهن/سرباز/تانک/جنگنده/بمب‌افکن به هم‌اتحادی‌ها (در پیوی).\n" +
-        "• <b>صف آرایی تهاجمی</b> — اعلام حملهٔ گروهی اتحاد علیه یک کشور بیرونی.\n" +
-        "• <b>صف آرایی دفاعی</b> — تشکیل خط دفاعی مشترک برای یک هم‌اتحادی.\n" +
-        "• <b>اعزام نیرو</b> — پیوستن و فرستادن نیرو به یک صف‌آرایی فعال اتحاد (یا روی دکمهٔ «⚔️ مشارکت و اعزام نیرو» زیر پیام صف‌آرایی بزنید).\n" +
-        "• <b>لغو صف آرایی</b> — لغو صف‌آرایی توسط سازنده یا رهبر (پیام پین‌شده هم برداشته و حذف می‌شود).\n\n" +
+" +
 
-        "ℹ️ <b>نکات</b>\n" +
-        "• همهٔ دستورها در گروه اجرا می‌شوند؛ ربات در پیوی فقط ادامهٔ عملیات و همین راهنما را انجام می‌دهد.\n" +
-        "• قبل از استفاده از حمله/ترنسفر/صف‌آرایی، حتماً یک‌بار ربات را در پیوی <b>استارت</b> کنید.\n" +
+        "⚓ <b>نیروی دریایی — ناوگان</b>
+" +
+        "• دستور: <b>خرید ناو / خرید کشتی / خرید قایق / نیروی دریایی / ناوگان</b>
+" +
+        "  🇩🇪 S-Boot 38–41 گره — هر 5: 2K پول+1K آهن
+" +
+        "  🇺🇸 PT Boat 40–45 گره — هر 5: 3K+1.5K
+" +
+        "  ☭ G-5 50–53 گره — هر 5: 2.5K+1.5K
+" +
+        "• زیردریایی: Type VIIC 17.7/7.6 — 10K+5K | Gato 21/9 — 10K+5K | S-class 13–14/7–8 — 8K+4K
+" +
+        "• نبردناو: Bismarck 30 گره 2092 خدمه 8x380mm — 50K+30K | Iowa 28 گره 1800 خدمه 9x406mm — 50K+40K | Sovetsky Soyuz 23 گره 1220 خدمه 12x305mm — 45K+25K (پورت>=4 max3)
+" +
+        "• <b>سوخت قایق</b>: پس از هر حمله دریایی سوخت 0% و به بندر بازمی‌گردد. بدون سوخت حمله ممکن نیست. خودکار در آپدیت دارایی یا دستی: <b>سوخت گیری / سوخت قایق</b>
+" +
+        "• <b>آسیب نبردناو</b>: عادی فقط آسیب نه انهدام مگر یک‌طرفه. تعمیر: <b>تعمیر ناو / تعمیر ناوگان</b> هزینه 60% قیمت × درصد آسیب.
+" +
+        "• انتقال نبردناو: <b>نمیتوانید به این کشور نبردناو ترنسفر کنید، تعداد نبرد ناو: 3</b>
+
+" +
+
+        "🗡 <b>حمله — زمینی/هوایی و دریایی</b>
+" +
+        "• <b>حمله</b> — هدف (Country (OwnerName)، متحدان حذف) → نوع: ⚔️ زمینی/هوایی یا ⚓ دریایی.
+" +
+        "• زمینی: هجوم منسجم / محاصره و ضربه + تاکتیک مستقیم/سبک/پراکنده/متحرک. هوایی: برتری/بمباران.
+" +
+        "• دریایی:
+" +
+        "  1️⃣ <b>نابودی ناوگان اصلی دشمن</b> — حمله غافلگیرانه به پایگاه‌های دریایی / کشاندن به نبرد تعیین‌کننده
+" +
+        "  2️⃣ <b>عملیات آبی‌خاکی</b> — بمباران دریایی / پیاده‌سازی موجی
+" +
+        "  دفاع: استحکامات و موانع ساحلی / ضدحمله سریع / حمله و عقب‌نشینی / کمین دریایی
+" +
+        "• برای هر مدل قایق/زیر/نبردناو جداگانه تعداد اعزام.
+" +
+        "• <b>تاخیری</b>: ناوگان پس از آپدیت دارایی می‌رسد + اطلاع به مدافع. غنیمت 1.5x زمینی. پیروزی >90% → بندر مدافع -1.
+" +
+        "• قوانین: حمله به <1/4 قدرت شما ممنوع. با نبردناو وقتی دریایی دشمن <3/4 غیرممکن. 5 حمله در 24h → 16h سپر.
+" +
+        "• قفل 30 دقیقه بعد آپدیت + سپر 48h تازه‌ساخت.
+
+" +
+
+        "🛡 <b>دفاع — چندمدلی و دریایی</b>
+" +
+        "• <b>وضعیت دفاع</b> در پیوی: درصد برای هر مدل تانک/جنگنده/قایق/زیر جداگانه (20-100%). حداقل 20% همیشه در دفاع.
+" +
+        "• دفاع دریایی: قایق و زیردریایی per-model.
+
+" +
+
+        "🤝 <b>اتحادها</b>
+" +
+        "• <b>ساخت اتحاد</b> (شباهت 90% چک)، <b>ایجاد درخواست عضویت</b> ریپلای، <b>وضعیت اتحاد</b>، <b>لیست اتحاد ها</b>، <b>حذف N</b>، <b>خروج</b>، <b>انحلال</b>.
+
+" +
+
+        "🚚 <b>عملیات مشترک — ترنسفر و صف‌آرایی</b>
+" +
+        "• <b>ترنسفر</b> — پول/آهن/سرباز/تانک/جنگنده/بمب‌افکن/قایق/زیر/نبردناو به هم‌اتحادی (پیوی). حفظ مدل حتی با تغییر فکشن. هر مدل مقدار جداگانه. نبردناو max3.
+" +
+        "• <b>صف آرایی تهاجمی/دفاعی</b> — همیشه یکپارچه. سازنده استراتژی+تاکتیک.
+" +
+        "• نیروهای دفاعی در دارایی دیده نمی‌شوند، فقط در <b>جزئیات نظامی → اطلاعات نیروهای صف آرایی</b> گروه‌بندی فکشن با مجموع. پیام گروه فقط مشارکت‌کنندگان + 🎯 استراتژی: X | تاکتیک: Y. پس از join پیام پین ویرایش می‌شود.
+" +
+        "• <b>اعزام نیرو</b> / دکمه ⚔️ مشارکت. <b>لغو صف آرایی</b> → آنپین+حذف.
+
+" +
+
+        "🏆 <b>لیدربورد شبانه</b>
+" +
+        "• هر شب 22:00 تهران +30 ثانیه، سه بورد: برترین مان‌پاور پلیرها، برترین گروه‌ها تعداد پلیر، برترین گروه‌ها مجموع مان‌پاور با 🥇🥈🥉 و دیوایدر ━━━━━━━━━━━━━━━━━━━ به پیوی مالک و کانال اختیاری. تنظیم کانال: پنل ادمین. دستور: adm:lb:now.
+
+" +
+
+        "👮 <b>پنل ادمین</b>
+" +
+        "• ماژول‌ها: پلیرها، کشورها، گروه‌ها، اتحادها، اقتصاد، جنگ، عملیات، اعلامیه، تنظیمات، نگهداری. فارسی با صفحه‌بندی.
+
+" +
+
+        "ℹ️ <b>نکات فنی</b>
+" +
+        "• بهینه‌سازی: GetCountriesByChatId WHERE ChatId=@cid، GetAttackableTargets تک کانکشن NOT IN، کش عنوان، 500ms.
+" +
+        "• دکمه جزئیات نظامی فقط مالک و خصوصی (پیوی).
+" +
+        "• همه متن‌های بازیکن فارسی.
+" +
+        "• قبل از حمله/ترنسفر/صف‌آرایی یکبار در پیوی استارت کنید. «لغو» برای خروج.
+" +
         "──────────────\n📢 @alice_safe_house1";
 
     // ============================================================
@@ -1985,7 +2741,27 @@ partial class Program
         Database.InitActivity();
         Database.InitAdminPanel(OWNER_ID);
         LoadSettings();
-        bot = new TelegramBotClient(BOT_TOKEN);
+        // Proxy support for IR filtering – if TELEGRAM_PROXY env or setting exists, use it
+        try
+        {
+            string proxyUrl = Environment.GetEnvironmentVariable("TELEGRAM_PROXY") ?? Database.GetSetting("ProxyUrl");
+            if (!string.IsNullOrWhiteSpace(proxyUrl))
+            {
+                var proxy = new System.Net.WebProxy(proxyUrl);
+                var httpClient = new HttpClient(new HttpClientHandler { Proxy = proxy, UseProxy = true });
+                bot = new TelegramBotClient(BOT_TOKEN, httpClient);
+                Console.WriteLine($"[BOT] Using proxy {proxyUrl}");
+            }
+            else
+            {
+                bot = new TelegramBotClient(BOT_TOKEN);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[PROXY ERR] {ex.Message} – falling back to direct");
+            bot = new TelegramBotClient(BOT_TOKEN);
+        }
         Console.WriteLine("Bot starting...");
         using var cts = new CancellationTokenSource();
         bot.StartReceiving(
@@ -1998,6 +2774,7 @@ partial class Program
         StartAssetUpdateTimer();
         StartTransferTimer();
         StartActivityStatsTimer();
+        StartLeaderboardTimer();
         await Task.Delay(-1);
     }
 
@@ -2031,6 +2808,53 @@ partial class Program
         int.TryParse(NormalizeDigits(s), NumberStyles.Integer, CultureInfo.InvariantCulture, out v);
     static string InventoryLine(long amount) =>
         amount > 0 ? $"موجودی: {amount:N0}" : "⚠️ موجودی نداری";
+
+    // Name similarity check – Levenshtein based, >90% considered too similar
+    static int LevenshteinDistance(string s, string t)
+    {
+        if (string.IsNullOrEmpty(s)) return string.IsNullOrEmpty(t) ? 0 : t.Length;
+        if (string.IsNullOrEmpty(t)) return s.Length;
+        s = s.ToLowerInvariant().Trim();
+        t = t.ToLowerInvariant().Trim();
+        int n = s.Length;
+        int m = t.Length;
+        int[,] d = new int[n + 1, m + 1];
+        for (int i = 0; i <= n; i++) d[i, 0] = i;
+        for (int j = 0; j <= m; j++) d[0, j] = j;
+        for (int i = 1; i <= n; i++)
+        {
+            for (int j = 1; j <= m; j++)
+            {
+                int cost = s[i - 1] == t[j - 1] ? 0 : 1;
+                d[i, j] = Math.Min(Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1), d[i - 1, j - 1] + cost);
+            }
+        }
+        return d[n, m];
+    }
+
+    static double CalculateNameSimilarity(string a, string b)
+    {
+        if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return 0;
+        a = a.Trim().ToLowerInvariant();
+        b = b.Trim().ToLowerInvariant();
+        if (a == b) return 1.0;
+        int maxLen = Math.Max(a.Length, b.Length);
+        if (maxLen == 0) return 1.0;
+        int distance = LevenshteinDistance(a, b);
+        return 1.0 - (double)distance / maxLen;
+    }
+
+    static bool IsNameTooSimilar(string newName, IEnumerable<string> existingNames, double threshold = 0.9)
+    {
+        foreach (var existing in existingNames)
+        {
+            if (string.IsNullOrWhiteSpace(existing)) continue;
+            // Exact match already handled elsewhere, but still consider similar
+            double sim = CalculateNameSimilarity(newName, existing);
+            if (sim >= threshold) return true;
+        }
+        return false;
+    }
 
     static void ScheduleDelete(long chatId, int messageId, int seconds = 30)
     {
@@ -2905,6 +3729,11 @@ partial class Program
 
         if (txt == "انتخاب کشور")
         {
+            if (Database.IsUserBanned(uid))
+            {
+                await SendTemp(chat.Id, "🚫 شما از بازی بن شده‌اید. لطفاً با ادمین تماس بگیرید.", ct: ct);
+                return;
+            }
             if (Database.CountryExists(uid, chat.Id))
             {
                 await SendTemp(chat.Id, "شما قبلاً کشور دارید", ct: ct);
@@ -3163,7 +3992,7 @@ partial class Program
             long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             if (Database.GetRecentAllianceDeploymentsCount(aid, nowMs - 86400000L) >= dailyLimit && !Database.HasGroupLockExemption(cid))
             { await SendTemp(cid, $"⛔ سقف روزانه صف‌آرایی ({dailyLimit}) پر شد.", ct: ct); return; }
-            var tgts = isOff ? Database.GetCountriesByChatId(cid).Where(c => !mems.Contains(c.OwnerId)).ToList() : mems.Select(m => Database.GetCountry(m, cid)).Where(c => c != null).ToList()!;
+            var tgts = isOff ? Database.GetAttackableTargets(cid, uid) : mems.Select(m => Database.GetCountry(m, cid)).Where(c => c != null).ToList()!;
             if (tgts.Count == 0) { await SendTemp(cid, isOff ? "❌ هیچ هدفی خارج از اتحاد وجود ندارد." : "❌ عضو معتبری برای دفاع وجود ندارد.", ct: ct); return; }
             await SendTemp(cid, "⚔️ برای تنظیم اسکجولر به پی‌وی ربات مراجعه کنید.", replyTo: msg.MessageId, ct: ct);
             var tkb = tgts.Select(t => new[] { InlineKeyboardButton.WithCallbackData($"🏳️ {t!.Name} ({t.OwnerName})", $"dep_target:{cid}:{aid}:{(isOff ? "Off" : "Def")}:{t.OwnerId}") }).ToArray();
@@ -3379,6 +4208,85 @@ partial class Program
             return;
         }
 
+        if (txt == "خرید ناو" || txt == "ساخت ناو" || txt == "خرید کشتی" || txt == "ساخت کشتی" || txt == "خرید قایق" || txt == "ساخت قایق" || txt == "نیروی دریایی" || txt == "ناوگان")
+        {
+            var country = Database.GetCountry(uid, chat.Id);
+            if (country == null) { await SendTemp(chat.Id, MsgNoCountryGuide, ct: ct); return; }
+            // Check port level for battleship info
+            string portInfo = country.PortLevel < 4 ? "\n⚠️ برای ساخت نبردناو بندر سطح ۴ لازم است" : "";
+            string fuelInfo = $"\n⛽ سوخت قایق‌ها: {country.BoatsFuel}% | زیردریایی: {country.SubmarinesFuel}%";
+            string dmgInfo = country.BattleshipDamage > 0 ? $"\n🔧 آسیب نبردناو: {country.BattleshipDamage}% مجموع | تعداد: {country.Battleships}" : $"\n🚢 نبردناو: {country.Battleships}/3";
+            string seaInfo = (country.BoatsAtSea + country.SubmarinesAtSea + country.BattleshipsAtSea) > 0 ? $"\n🌊 در دریا: {country.BoatsAtSea}🚤 {country.SubmarinesAtSea}⚓ {country.BattleshipsAtSea}🚢" : "";
+            var navalKb = country.Faction switch
+            {
+                Faction.USA => new InlineKeyboardMarkup(new[]
+                {
+                    new[] { InlineKeyboardButton.WithCallbackData("🚤 PT Boat (قایق) – 5 عدد", $"boat_info:{uid}:PTBoat") },
+                    new[] { InlineKeyboardButton.WithCallbackData("🚢 Gato (زیردریایی)", $"sub_info:{uid}:Gato") },
+                    new[] { InlineKeyboardButton.WithCallbackData("⚓ Iowa (نبردناو)", $"battleship_info:{uid}:Iowa") },
+                    new[] { InlineKeyboardButton.WithCallbackData("🔧 تعمیر ناو", $"battleship_repair:{uid}"), InlineKeyboardButton.WithCallbackData("⛽ سوخت‌گیری قایق", $"boat_refuel:{uid}") }
+                }),
+                Faction.USSR => new InlineKeyboardMarkup(new[]
+                {
+                    new[] { InlineKeyboardButton.WithCallbackData("🚤 G-5 (قایق) – 5 عدد", $"boat_info:{uid}:G5") },
+                    new[] { InlineKeyboardButton.WithCallbackData("🚢 S-class (زیردریایی)", $"sub_info:{uid}:SClass") },
+                    new[] { InlineKeyboardButton.WithCallbackData("⚓ Sovetsky Soyuz (نبردناو)", $"battleship_info:{uid}:Soyuz") },
+                    new[] { InlineKeyboardButton.WithCallbackData("🔧 تعمیر ناو", $"battleship_repair:{uid}"), InlineKeyboardButton.WithCallbackData("⛽ سوخت‌گیری قایق", $"boat_refuel:{uid}") }
+                }),
+                _ => new InlineKeyboardMarkup(new[]
+                {
+                    new[] { InlineKeyboardButton.WithCallbackData("🚤 S-Boot (قایق) – 5 عدد", $"boat_info:{uid}:SBoot") },
+                    new[] { InlineKeyboardButton.WithCallbackData("🚢 Type VIIC (زیردریایی)", $"sub_info:{uid}:VIIC") },
+                    new[] { InlineKeyboardButton.WithCallbackData("⚓ Bismarck (نبردناو)", $"battleship_info:{uid}:Bismarck") },
+                    new[] { InlineKeyboardButton.WithCallbackData("🔧 تعمیر ناو", $"battleship_repair:{uid}"), InlineKeyboardButton.WithCallbackData("⛽ سوخت‌گیری قایق", $"boat_refuel:{uid}") }
+                })
+            };
+            await SendTemp(chat.Id, $"⚓ نیروی دریایی – فکشن {country.Faction}{portInfo}{fuelInfo}{dmgInfo}{seaInfo}\nبرای اطلاعات هر واحد روی دکمه بزنید:", markup: navalKb, ct: ct);
+            return;
+        }
+
+        if (txt == "تعمیر ناو" || txt == "تعمیر ناوگان" || txt == "تعمیر کشتی" || txt == "تعمیر ناو جنگی" || txt == "تعمیرات ناو")
+        {
+            var country = Database.GetCountry(uid, chat.Id);
+            if (country == null) { await SendTemp(chat.Id, MsgNoCountryGuide, ct: ct); return; }
+            if (country.Battleships == 0) { await SendTemp(chat.Id, "❌ شما نبردناوی ندارید که نیاز به تعمیر داشته باشد.", ct: ct); return; }
+            if (country.BattleshipDamage <= 0) { await SendTemp(chat.Id, "✅ نبردناوهای شما آسیبی ندیده‌اند – نیازی به تعمیر نیست.", ct: ct); return; }
+
+            long totalDamage = country.BattleshipDamage;
+            long totalCount = country.Battleships;
+            long moneyPer = country.Faction == Faction.USA ? 50000 : country.Faction == Faction.USSR ? 45000 : 50000;
+            long ironPer = country.Faction == Faction.USA ? 40000 : country.Faction == Faction.USSR ? 25000 : 30000;
+            long totalMoneyCost = moneyPer * totalCount;
+            long totalIronCost = ironPer * totalCount;
+            double dmgFraction = totalDamage / (double)(totalCount * 100);
+            long needMoney = (long)(totalMoneyCost * 0.6 * dmgFraction);
+            long needIron = (long)(totalIronCost * 0.6 * dmgFraction);
+            var repairKb = new InlineKeyboardMarkup(new[]
+            {
+                new[] { InlineKeyboardButton.WithCallbackData($"✅ تعمیر کامل ({needMoney/1000}K پول، {needIron/1000}K آهن)", $"battleship_repair_confirm:{uid}:{needMoney}:{needIron}") },
+                new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "cancel") }
+            });
+            await SendTemp(chat.Id, $"🔧 **تعمیر ناو** 🔧\n━━━━━━━━━━━━━━━━━━━\n🚢 تعداد نبردناو: {country.Battleships}\n💥 آسیب مجموع: {totalDamage}% (میانگین {totalDamage / Math.Max(1, totalCount)}% هر ناو)\n💰 هزینه تعمیر کامل (60% قیمت ساخت): {needMoney:N0} پول + {needIron:N0} آهن\n💡 توضیح: نبردناوها در نبردهای دریایی عادی فقط آسیب می‌بینند و منهدم نمی‌شوند، مگر نبرد یک‌طرفه باشد. برای بازگرداندن به 100% از این دستور استفاده کنید.\n━━━━━━━━━━━━━━━━━━━", markup: repairKb, ct: ct);
+            return;
+        }
+
+        if (txt == "سوخت گیری" || txt == "سوخت‌گیری" || txt == "سوخت قایق" || txt == "شارژ قایق" || txt == "سوختگیری قایق")
+        {
+            var country = Database.GetCountry(uid, chat.Id);
+            if (country == null) { await SendTemp(chat.Id, MsgNoCountryGuide, ct: ct); return; }
+            if (country.Boats == 0) { await SendTemp(chat.Id, "❌ شما قایقی ندارید.", ct: ct); return; }
+            if (country.BoatsFuel >= 100) { await SendTemp(chat.Id, "✅ سوخت قایق‌ها کامل است (100%).", ct: ct); return; }
+            int missing = 100 - country.BoatsFuel;
+            long needIron = (long)(country.Boats * missing * 0.5); // 0.5 iron per % per boat? small
+            var refuelKb = new InlineKeyboardMarkup(new[]
+            {
+                new[] { InlineKeyboardButton.WithCallbackData($"⛽ سوخت‌گیری کامل ({needIron:N0} آهن)", $"boat_refuel_confirm:{uid}:{needIron}") },
+                new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "cancel") }
+            });
+            await SendTemp(chat.Id, $"⛽ **سوخت‌گیری قایق‌ها**\n━━━━━━━━━━━━━━━━━━━\n🚤 تعداد قایق: {country.Boats}\n⛽ سوخت فعلی: {country.BoatsFuel}%\n🔧 نیاز: {missing}% → هزینه {needIron:N0} آهن\n💡 قایق‌ها سوخت محدود دارند و پس از هر حمله دریایی سوخت تمام می‌کنند و به بندر بازمی‌گردند. بدون سوخت نمی‌توانند حمله کنند و در آپدیت دارایی به صورت خودکار با هزینه کم سوخت‌گیری می‌شوند، اما می‌توانید دستی هم سوخت‌گیری کنید.\n━━━━━━━━━━━━━━━━━━━", markup: refuelKb, ct: ct);
+            return;
+        }
+
         if (txt == "تغییر اسم" || txt == "تعویض اسم" || txt == "تغییر اسم کشور" || txt == "تعویض اسم کشور")
         {
             var country = Database.GetCountry(uid, chat.Id);
@@ -3428,6 +4336,13 @@ partial class Program
         {
             if (string.IsNullOrWhiteSpace(txt)) { await SendPrompt(uid, chat.Id, "اسم معتبر بفرستید.", ct: ct); return; }
             if (Database.CountryNameExists(txt)) { await SendPrompt(uid, chat.Id, "این اسم قبلاً استفاده شده.", ct: ct); return; }
+            // Name similarity check >90% within same chat
+            var existingCountryNames = Database.GetCountriesByChatId(chat.Id).Where(c => c.OwnerId != uid).Select(c => c.Name);
+            if (IsNameTooSimilar(txt, existingCountryNames, 0.9))
+            {
+                await SendPrompt(uid, chat.Id, "❌ این نام خیلی شبیه به نام موجود است!! لطفاً نام دیگری انتخاب کنید.", ct: ct);
+                return;
+            }
             Database.UpdateCountryName(uid, chat.Id, txt);
             EndSession(uid);
             await SendTemp(chat.Id, $"✅ نام کشور به {txt} تغییر یافت.", ct: ct);
@@ -3501,6 +4416,12 @@ partial class Program
         {
             if (string.IsNullOrWhiteSpace(txt)) { await SendPrompt(uid, chat.Id, "نام معتبر.", ct: ct); return; }
             if (Database.AllianceNameExists(chat.Id, txt)) { await SendPrompt(uid, chat.Id, "این نام قبلاً ثبت شده.", ct: ct); return; }
+            var existingAllianceNames = Database.GetAlliancesByChatId(chat.Id).Select(a => a.Name);
+            if (IsNameTooSimilar(txt, existingAllianceNames, 0.9))
+            {
+                await SendPrompt(uid, chat.Id, "❌ این نام خیلی شبیه به نام اتحاد موجود است!! لطفاً نام دیگری انتخاب کنید.", ct: ct);
+                return;
+            }
             allyNameSess.Step = SessionStep.WaitingAllianceFlag;
             allyNameSess.AllianceName = txt;
             await SendPrompt(uid, chat.Id, $"✅ نام: «{txt}»\n🚩 عکس پرچم را ارسال کنید:", ct: ct);
@@ -3513,6 +4434,12 @@ partial class Program
             if (rm > 0) { EndSession(uid); await SendTemp(chat.Id, $"⛔ تا {FormatRemaining(rm)} نمی‌توانید کشور بسازید.", ct: ct); return; }
             if (string.IsNullOrWhiteSpace(txt)) { await SendPrompt(uid, chat.Id, "اسم معتبر.", ct: ct); return; }
             if (Database.CountryNameExists(txt)) { await SendPrompt(uid, chat.Id, "این اسم استفاده شده.", ct: ct); return; }
+            var existingNamesForNew = Database.GetCountriesByChatId(chat.Id).Select(c => c.Name);
+            if (IsNameTooSimilar(txt, existingNamesForNew, 0.9))
+            {
+                await SendPrompt(uid, chat.Id, "❌ این نام خیلی شبیه به نام موجود است!! لطفاً نام دیگری انتخاب کنید.", ct: ct);
+                return;
+            }
             var flags = Database.GetFactionFlags(sess.FactionStr);
             string flagId = flags.Count > 0 ? flags[rng.Next(flags.Count)] : "";
             var nc = new Country
@@ -3533,9 +4460,9 @@ partial class Program
             var country = Database.GetCountry(uid, chat.Id);
             if (country == null) { await SendTemp(chat.Id, MsgNoCountryGuide, ct: ct); return; }
             await SendTemp(chat.Id, "⚔️ برای مشخص کردن هدف به پیوی مراجعه کنید.", replyTo: msg.MessageId, ct: ct);
-            var targets = Database.GetCountriesByChatId(chat.Id).Where(c => c.OwnerId != uid).ToList();
+            var targets = Database.GetAttackableTargets(chat.Id, uid);
             if (targets.Count == 0) { await SendTemp(uid, "هیچ هدفی در این گروه وجود ندارد.", ct: ct); return; }
-            var kb = targets.Select(t => new[] { InlineKeyboardButton.WithCallbackData(t.OwnerName, $"attack_target:{chat.Id}:{t.OwnerId}") }).ToArray();
+            var kb = targets.Select(t => new[] { InlineKeyboardButton.WithCallbackData($"{t.Name} ({t.OwnerName})", $"attack_target:{chat.Id}:{t.OwnerId}") }).ToArray();
             sessions[uid] = new UserSession { Step = SessionStep.AttackWaitingTarget, AttackChatId = chat.Id };
             await SendPrompt(uid, uid, "🎯 هدف را انتخاب کنید:", new InlineKeyboardMarkup(kb), ct);
             return;
@@ -3602,7 +4529,10 @@ partial class Program
         {
             if (sess.Step == SessionStep.TransferWaitingAmount)
             {
-                if (!TryParseLong(txt, out long amount) || amount <= 0) { await SendPrompt(uid, uid, "❌ عدد مثبت:", ct: ct); return; }
+                // Single-model transfer (or fallback)
+                if (!TryParseLong(txt, out long amount) || amount < 0) { await SendPrompt(uid, uid, "❌ عدد را به صورت عدد مثبت وارد کنید (0 برای لغو):", ct: ct); return; }
+                if (amount == 0) { EndSession(uid); await SendTemp(uid, "✅ انتقال لغو شد.", ct: ct); return; }
+
                 var c = Database.GetCountry(uid, sess.TransferChatId);
                 if (c == null) { EndSession(uid); return; }
                 long myAid = Database.GetUserAllianceId(sess.TransferChatId, uid);
@@ -3613,39 +4543,347 @@ partial class Program
                 if (recv == null) { EndSession(uid); await SendTemp(uid, "❌ گیرنده کشوری ندارد.", ct: ct); return; }
                 if (GetTransferCount(sess.TransferChatId, uid) >= MAX_TRANSFERS_PER_UPDATE && !Database.HasGroupLockExemption(sess.TransferChatId))
                 { EndSession(uid); await SendTemp(uid, $"⛔ سهمیه تمام شد ({MAX_TRANSFERS_PER_UPDATE}).", ct: ct); return; }
-                long avail = sess.TransferResourceType switch { "money" => c.Money, "iron" => c.Iron, "soldiers" => c.Soldiers, "tanks" => c.Tanks, "planes" => c.Planes, _ => c.Bombers };
+
+                // Rebuild breakdown if missing (for old sessions)
+                if (sess.TransferModelNames.Count == 0)
+                {
+                    var breakdown = GetTransferBreakdown(c, sess.TransferResourceType);
+                    sess.TransferModelNames = breakdown.Select(b => b.ModelName).ToList();
+                    sess.TransferModelCounts = breakdown.Select(b => b.Count).ToList();
+                    sess.TransferModelAmounts = new List<long>(new long[breakdown.Count]);
+                    sess.TransferModelIndex = 0;
+                }
+
                 string resName = GetResName(sess.TransferResourceType);
-                if (amount > avail) { await SendPrompt(uid, uid, $"❌ موجودی: {avail:N0}", ct: ct); return; }
+
+                if (sess.TransferModelNames.Count == 0)
+                {
+                    await SendPrompt(uid, uid, "❌ موجودی‌ای برای انتقال ندارید.", ct: ct);
+                    return;
+                }
+
+                // Single model validation
+                long availSingle = sess.TransferModelCounts.Count > 0 ? sess.TransferModelCounts[0] : 0;
+                // Fallback to total if counts not set
+                if (availSingle == 0)
+                {
+                    availSingle = sess.TransferResourceType switch { "money" => c.Money, "iron" => c.Iron, "soldiers" => c.Soldiers, "tanks" => c.Tanks, "planes" => c.Planes, _ => c.Bombers };
+                }
+
+                if (amount > availSingle)
+                {
+                    await SendPrompt(uid, uid, $"❌ موجودی این مدل کافی نیست.\n📊 موجودی: {availSingle:N0}\n🔢 دوباره وارد کنید:", ct: ct);
+                    return;
+                }
+
+                sess.TransferModelAmounts[0] = amount;
+
+                // Finalize single-model transfer
+                long totalDeduct = amount;
+                // Battleship cap check before deduct
+                if (sess.TransferResourceType == "battleships")
+                {
+                    var recvCheck = Database.GetCountry(sess.TransferTargetId, sess.TransferChatId);
+                    if (recvCheck != null && recvCheck.Battleships >= 3)
+                    {
+                        EndSession(uid);
+                        await SendTemp(uid, "❌ نمیتوانید به این کشور نبردناو ترنسفر کنید، تعداد نبرد ناو: 3", ct: ct);
+                        return;
+                    }
+                }
+                // Deduct from sender
                 switch (sess.TransferResourceType)
                 {
-                    case "money": c.Money -= amount; break;
-                    case "iron": c.Iron -= amount; break;
-                    case "soldiers": c.Soldiers -= amount; break;
-                    case "tanks": c.Tanks -= amount; break;
-                    case "planes": c.Planes -= amount; break;
-                    case "bombers": c.Bombers -= amount; break;
+                    case "money": c.Money -= totalDeduct; break;
+                    case "iron": c.Iron -= totalDeduct; break;
+                    case "soldiers": c.Soldiers -= totalDeduct; break;
+                    case "tanks": c.Tanks -= totalDeduct; break;
+                    case "planes": c.Planes -= totalDeduct; break;
+                    case "bombers": c.Bombers -= totalDeduct; break;
+                    case "boats": c.Boats -= totalDeduct; break;
+                    case "submarines": c.Submarines -= totalDeduct; break;
+                    case "battleships": c.Battleships -= totalDeduct; break;
                 }
                 Database.UpdateCountryFull(c);
                 Database.ReconcileDefense(uid, sess.TransferChatId);
-                bool isTfExempt = Database.HasGroupLockExemption(sess.TransferChatId); long arrMs = isTfExempt ? 0 : DateTimeOffset.UtcNow.AddMinutes(sess.TransferDurationMin).ToUnixTimeMilliseconds();
-                var tf = new Transfer { ChatId = sess.TransferChatId, AllianceId = myAid, SenderId = uid, ReceiverId = sess.TransferTargetId, ResourceType = sess.TransferResourceType, Amount = amount, ArriveAtMs = arrMs, Notified = 0 };
+
+                // Handle equipment model deduction for sender (including naval)
+                if (sess.TransferResourceType is "tanks" or "planes" or "bombers" or "boats" or "submarines" or "battleships")
+                {
+                    string category = sess.TransferResourceType switch { "tanks" => "Tanks", "planes" => "Planes", "bombers" => "Bombers", "boats" => "Boats", "submarines" => "Submarines", "battleships" => "Battleships", _ => "Boats" };
+                    string modelName = sess.TransferModelNames[0];
+                    string defaultModel = sess.TransferResourceType switch
+                    {
+                        "tanks" => Database.GetDefaultTankModel(c.Faction),
+                        "planes" => Database.GetDefaultPlaneModel(c.Faction),
+                        "bombers" => Database.GetDefaultBomberModel(c.Faction),
+                        "boats" => Database.GetDefaultBoatModel(c.Faction),
+                        "submarines" => Database.GetDefaultSubModel(c.Faction),
+                        "battleships" => Database.GetDefaultBattleshipModel(c.Faction),
+                        _ => ""
+                    };
+                    if (!string.IsNullOrWhiteSpace(modelName) && modelName != defaultModel)
+                    {
+                        Database.AddEquipmentModel(uid, sess.TransferChatId, category, modelName, -amount);
+                    }
+                    else if (!string.IsNullOrWhiteSpace(modelName) && modelName == defaultModel)
+                    {
+                        var foreignList = Database.GetEquipmentModels(uid, sess.TransferChatId, category);
+                        var foreignSame = foreignList.FirstOrDefault(f => f.ModelName == modelName);
+                        if (foreignSame != null && foreignSame.Count > 0)
+                        {
+                            long fromForeign = Math.Min(amount, foreignSame.Count);
+                            if (fromForeign > 0)
+                                Database.AddEquipmentModel(uid, sess.TransferChatId, category, modelName, -fromForeign);
+                        }
+                    }
+                }
+
+                bool isTfExempt = Database.HasGroupLockExemption(sess.TransferChatId);
+                long arrMs = isTfExempt ? 0 : DateTimeOffset.UtcNow.AddMinutes(sess.TransferDurationMin).ToUnixTimeMilliseconds();
+
+                string modelToStore = sess.TransferModelNames.Count > 0 ? sess.TransferModelNames[0] : "";
+                var tf = new Transfer
+                {
+                    ChatId = sess.TransferChatId,
+                    AllianceId = myAid,
+                    SenderId = uid,
+                    ReceiverId = sess.TransferTargetId,
+                    ResourceType = sess.TransferResourceType,
+                    ModelName = modelToStore,
+                    Amount = amount,
+                    ArriveAtMs = arrMs,
+                    Notified = 0
+                };
                 Database.AddTransfer(tf);
                 IncTransferCount(sess.TransferChatId, uid);
                 EndSession(uid);
-                if (isTfExempt) { await SendTemp(uid, $"✅ محموله ارسال شد!\n📦 {amount:N0} {resName}\n" + "⚡ تحویل فوری (معافیت کامل گروه)", ct: ct); _ = Task.Run(async () => { try { await ProcessActiveTransfers(CancellationToken.None); } catch { } }); } else { await SendTemp(uid, $"✅ محموله ارسال شد!\n📦 {amount:N0} {resName}\n⏳ {sess.TransferDurationMin} دقیقه دیگر", ct: ct); }
-                try { await bot.SendTextMessageAsync(sess.TransferTargetId, $"🚚 محموله از {c.OwnerName} ({c.Name}): {amount:N0} {resName} — {sess.TransferDurationMin} دقیقه دیگر", cancellationToken: ct); } catch { }
+
+                string modelInfoSingle = string.IsNullOrWhiteSpace(modelToStore) ? "" : $" ({modelToStore})";
+                if (isTfExempt)
+                {
+                    await SendTemp(uid, $"✅ محموله ارسال شد!\n📦 {amount:N0} {resName}{modelInfoSingle}\n⚡ تحویل فوری (معافیت کامل گروه)", ct: ct);
+                    _ = Task.Run(async () => { try { await ProcessActiveTransfers(CancellationToken.None); } catch { } });
+                }
+                else
+                {
+                    await SendTemp(uid, $"✅ محموله ارسال شد!\n📦 {amount:N0} {resName}{modelInfoSingle}\n⏳ {sess.TransferDurationMin} دقیقه دیگر تحویل می‌شود.", ct: ct);
+                }
+                try { await bot.SendTextMessageAsync(sess.TransferTargetId, $"🚚 محموله از {c.OwnerName} ({c.Name}): {amount:N0} {resName}{modelInfoSingle} — {sess.TransferDurationMin} دقیقه دیگر", cancellationToken: ct); } catch { }
+                return;
+            }
+
+            if (sess.Step == SessionStep.TransferWaitingModelAmount)
+            {
+                // Per-model amount entry
+                if (!TryParseLong(txt, out long amount) || amount < 0) { await SendPrompt(uid, uid, "❌ عدد نامعتبر. لطفاً عدد مثبت (یا 0 برای رد شدن) وارد کنید:", ct: ct); return; }
+
+                var c = Database.GetCountry(uid, sess.TransferChatId);
+                if (c == null) { EndSession(uid); return; }
+
+                int idx = sess.TransferModelIndex;
+                if (idx < 0 || idx >= sess.TransferModelNames.Count)
+                {
+                    EndSession(uid);
+                    await SendTemp(uid, "❌ خطای داخلی در انتقال. دوباره تلاش کنید.", ct: ct);
+                    return;
+                }
+
+                long availModel = sess.TransferModelCounts[idx];
+                if (amount > availModel)
+                {
+                    await SendPrompt(uid, uid, $"❌ موجودی این مدل کافی نیست.\n📦 مدل: {sess.TransferModelNames[idx]}\n📊 موجودی: {availModel:N0}\nدوباره وارد کنید:", ct: ct);
+                    return;
+                }
+
+                sess.TransferModelAmounts[idx] = amount;
+                sess.TransferModelIndex++;
+
+                if (sess.TransferModelIndex < sess.TransferModelNames.Count)
+                {
+                    // Ask next model
+                    var next = sess.TransferModelNames[sess.TransferModelIndex];
+                    var nextAvail = sess.TransferModelCounts[sess.TransferModelIndex];
+                    string rn = GetResName(sess.TransferResourceType);
+                    await SendPrompt(uid, uid,
+                        $"📦 انتقال {rn} – مدل {sess.TransferModelIndex + 1}/{sess.TransferModelNames.Count}\n\n🔧 مدل: {(string.IsNullOrWhiteSpace(next) ? rn : next)}\n📊 موجودی این مدل: {nextAvail:N0}\n\nچند عدد از این مدل ارسال شود؟ (0 برای رد شدن)",
+                        ct: ct);
+                    return;
+                }
+
+                // All models entered – finalize
+                long totalAmount = sess.TransferModelAmounts.Sum();
+                if (totalAmount <= 0)
+                {
+                    EndSession(uid);
+                    await SendTemp(uid, "✅ انتقال لغو شد (مقداری انتخاب نشد).", ct: ct);
+                    return;
+                }
+
+                long myAid = Database.GetUserAllianceId(sess.TransferChatId, uid);
+                if (myAid == 0) { EndSession(uid); await SendTemp(uid, "❌ شما دیگر عضو اتحاد نیستید.", ct: ct); return; }
+                long tgtAid = Database.GetUserAllianceId(sess.TransferChatId, sess.TransferTargetId);
+                if (tgtAid != myAid) { EndSession(uid); await SendTemp(uid, "❌ گیرنده هم‌اتحاد شما نیست.", ct: ct); return; }
+                var recv = Database.GetCountry(sess.TransferTargetId, sess.TransferChatId);
+                if (recv == null) { EndSession(uid); await SendTemp(uid, "❌ گیرنده کشوری ندارد.", ct: ct); return; }
+                if (GetTransferCount(sess.TransferChatId, uid) >= MAX_TRANSFERS_PER_UPDATE && !Database.HasGroupLockExemption(sess.TransferChatId))
+                { EndSession(uid); await SendTemp(uid, $"⛔ سهمیه تمام شد ({MAX_TRANSFERS_PER_UPDATE}).", ct: ct); return; }
+
+                // Battleship cap check for multi-model
+                if (sess.TransferResourceType == "battleships")
+                {
+                    var recvCheck2 = Database.GetCountry(sess.TransferTargetId, sess.TransferChatId);
+                    if (recvCheck2 != null && recvCheck2.Battleships + totalAmount > 3)
+                    {
+                        EndSession(uid);
+                        await SendTemp(uid, $"❌ نمیتوانید به این کشور نبردناو ترنسفر کنید، تعداد نبرد ناو: {recvCheck2.Battleships}/3 – ظرفیت پر!", ct: ct);
+                        return;
+                    }
+                }
+                // Deduct total from sender country
+                switch (sess.TransferResourceType)
+                {
+                    case "money": c.Money -= totalAmount; break;
+                    case "iron": c.Iron -= totalAmount; break;
+                    case "soldiers": c.Soldiers -= totalAmount; break;
+                    case "tanks": c.Tanks -= totalAmount; break;
+                    case "planes": c.Planes -= totalAmount; break;
+                    case "bombers": c.Bombers -= totalAmount; break;
+                    case "boats": c.Boats -= totalAmount; break;
+                    case "submarines": c.Submarines -= totalAmount; break;
+                    case "battleships": c.Battleships -= totalAmount; break;
+                }
+                Database.UpdateCountryFull(c);
+                Database.ReconcileDefense(uid, sess.TransferChatId);
+
+                // Deduct per-model from equipment table for foreign models (including naval)
+                if (sess.TransferResourceType is "tanks" or "planes" or "bombers" or "boats" or "submarines" or "battleships")
+                {
+                    string category = sess.TransferResourceType switch { "tanks" => "Tanks", "planes" => "Planes", "bombers" => "Bombers", "boats" => "Boats", "submarines" => "Submarines", "battleships" => "Battleships", _ => "Boats" };
+                    string defaultModel = sess.TransferResourceType switch
+                    {
+                        "tanks" => Database.GetDefaultTankModel(c.Faction),
+                        "planes" => Database.GetDefaultPlaneModel(c.Faction),
+                        "bombers" => Database.GetDefaultBomberModel(c.Faction),
+                        "boats" => Database.GetDefaultBoatModel(c.Faction),
+                        "submarines" => Database.GetDefaultSubModel(c.Faction),
+                        "battleships" => Database.GetDefaultBattleshipModel(c.Faction),
+                        _ => ""
+                    };
+                    var foreignList = Database.GetEquipmentModels(uid, sess.TransferChatId, category);
+
+                    for (int i = 0; i < sess.TransferModelNames.Count; i++)
+                    {
+                        long amt = sess.TransferModelAmounts[i];
+                        if (amt <= 0) continue;
+                        string modelName = sess.TransferModelNames[i];
+                        if (string.IsNullOrWhiteSpace(modelName)) continue;
+
+                        if (modelName == defaultModel)
+                        {
+                            var foreignSame = foreignList.FirstOrDefault(f => f.ModelName == modelName);
+                            if (foreignSame != null && foreignSame.Count > 0)
+                            {
+                                long fromForeign = Math.Min(amt, foreignSame.Count);
+                                if (fromForeign > 0)
+                                    Database.AddEquipmentModel(uid, sess.TransferChatId, category, modelName, -fromForeign);
+                            }
+                        }
+                        else
+                        {
+                            Database.AddEquipmentModel(uid, sess.TransferChatId, category, modelName, -amt);
+                        }
+                    }
+                }
+
+                bool isTfExempt = Database.HasGroupLockExemption(sess.TransferChatId);
+                long arrMs = isTfExempt ? 0 : DateTimeOffset.UtcNow.AddMinutes(sess.TransferDurationMin).ToUnixTimeMilliseconds();
+
+                // Create multiple transfer records, one per model with amount>0
+                long created = 0;
+                for (int i = 0; i < sess.TransferModelNames.Count; i++)
+                {
+                    long amt = sess.TransferModelAmounts[i];
+                    if (amt <= 0) continue;
+                    var tf = new Transfer
+                    {
+                        ChatId = sess.TransferChatId,
+                        AllianceId = myAid,
+                        SenderId = uid,
+                        ReceiverId = sess.TransferTargetId,
+                        ResourceType = sess.TransferResourceType,
+                        ModelName = sess.TransferModelNames[i],
+                        Amount = amt,
+                        ArriveAtMs = arrMs,
+                        Notified = 0
+                    };
+                    Database.AddTransfer(tf);
+                    created++;
+                }
+
+                IncTransferCount(sess.TransferChatId, uid);
+                string summary = "";
+                for (int i = 0; i < sess.TransferModelNames.Count; i++)
+                {
+                    if (sess.TransferModelAmounts[i] > 0)
+                        summary += $"\n• {sess.TransferModelNames[i]}: {sess.TransferModelAmounts[i]:N0}";
+                }
+
+                EndSession(uid);
+
+                string resNameFinal = GetResName(sess.TransferResourceType);
+                if (isTfExempt)
+                {
+                    await SendTemp(uid, $"✅ محموله ارسال شد! ({created} مدل)\n📦 مجموع: {totalAmount:N0} {resNameFinal}\n{summary}\n⚡ تحویل فوری", ct: ct);
+                    _ = Task.Run(async () => { try { await ProcessActiveTransfers(CancellationToken.None); } catch { } });
+                }
+                else
+                {
+                    await SendTemp(uid, $"✅ محموله ارسال شد! ({created} مدل)\n📦 مجموع: {totalAmount:N0} {resNameFinal}\n{summary}\n⏳ {sess.TransferDurationMin} دقیقه دیگر", ct: ct);
+                }
+                try { await bot.SendTextMessageAsync(sess.TransferTargetId, $"🚚 محموله از {c.OwnerName} ({c.Name}): {totalAmount:N0} {resNameFinal}{summary} — {sess.TransferDurationMin} دقیقه دیگر", cancellationToken: ct); } catch { }
                 return;
             }
 
             if (sess.Step == SessionStep.DeployWaitingTanks)
             {
-                if (!TryParseLong(txt, out long tnk) || tnk < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر.", ct: ct); return; }
+                // Legacy total tanks – now redirect to per-model for 
                 var c = Database.GetCountry(uid, sess.DeployChatId);
                 if (c == null) { EndSession(uid); return; }
-                if (tnk > c.Tanks) { await SendPrompt(uid, uid, $"❌ موجودی: {c.Tanks}", ct: ct); return; }
-                sess.DeployTanks = tnk;
+                var breakdown = GetTransferBreakdown(c, "tanks");
+                if (breakdown.Count == 0)
+                {
+                    sess.DeployTanks = 0;
+                    sess.Step = SessionStep.DeployWaitingSoldiers;
+                    await SendPrompt(uid, uid, $"🪖 سرباز:\nموجود: {c.Soldiers:N0}", ct: ct);
+                    return;
+                }
+                sess.DeployModelNames = breakdown.Select(x => x.ModelName).ToList();
+                sess.DeployModelCounts = breakdown.Select(x => x.Count).ToList();
+                sess.DeployModelAmounts = new List<long>(new long[breakdown.Count]);
+                sess.DeployModelIndex = 0;
+                sess.DeployCurrentCategory = "tanks";
+                sess.Step = SessionStep.DeployWaitingTankModel;
+                await SendPrompt(uid, uid, $"🛡 صف آرایی – تانک مدل 1/{breakdown.Count}: {breakdown[0].ModelName} – موجودی {breakdown[0].Count:N0}\nچند تا اعزام شود؟ (0 برای رد)", ct: ct);
+                return;
+            }
+            if (sess.Step == SessionStep.DeployWaitingTankModel)
+            {
+                if (!TryParseLong(txt, out long amt) || amt < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر.", ct: ct); return; }
+                int idx = sess.DeployModelIndex;
+                if (idx < 0 || idx >= sess.DeployModelCounts.Count) { EndSession(uid); return; }
+                if (amt > sess.DeployModelCounts[idx]) { await SendPrompt(uid, uid, $"❌ موجودی این مدل: {sess.DeployModelCounts[idx]:N0}", ct: ct); return; }
+                sess.DeployModelAmounts[idx] = amt;
+                sess.DeployModelIndex++;
+                if (sess.DeployModelIndex < sess.DeployModelNames.Count)
+                {
+                    await SendPrompt(uid, uid, $"🛡 مدل {sess.DeployModelIndex + 1}/{sess.DeployModelNames.Count}: {sess.DeployModelNames[sess.DeployModelIndex]} – موجودی {sess.DeployModelCounts[sess.DeployModelIndex]:N0}\nچند تا؟ (0 برای رد)", ct: ct);
+                    return;
+                }
+                sess.DeployTanks = sess.DeployModelAmounts.Sum();
                 sess.Step = SessionStep.DeployWaitingSoldiers;
-                await SendPrompt(uid, uid, $"🪖 سرباز:\nموجود: {c.Soldiers:N0}", ct: ct);
+                var c = Database.GetCountry(uid, sess.DeployChatId);
+                await SendPrompt(uid, uid, $"🪖 سرباز:\nموجود: {c?.Soldiers ?? 0:N0}", ct: ct);
                 return;
             }
             if (sess.Step == SessionStep.DeployWaitingSoldiers)
@@ -3655,15 +4893,61 @@ partial class Program
                 if (c == null) { EndSession(uid); return; }
                 if (sol > c.Soldiers) { await SendPrompt(uid, uid, $"❌ موجودی: {c.Soldiers}", ct: ct); return; }
                 sess.DeploySoldiers = sol;
-                sess.Step = SessionStep.DeployWaitingFighters;
-                await SendPrompt(uid, uid, $"✈️ جنگنده:\nموجود: {c.Planes:N0}", ct: ct);
+                // Per-model planes
+                var planeBreakdown = GetTransferBreakdown(c, "planes");
+                if (planeBreakdown.Count == 0)
+                {
+                    sess.DeployFighters = 0;
+                    sess.Step = SessionStep.DeployWaitingBombers;
+                    await SendPrompt(uid, uid, $"🛩 بمب‌افکن:\nموجود: {c.Bombers:N0}", ct: ct);
+                    return;
+                }
+                sess.DeployModelNames = planeBreakdown.Select(x => x.ModelName).ToList();
+                sess.DeployModelCounts = planeBreakdown.Select(x => x.Count).ToList();
+                sess.DeployModelAmounts = new List<long>(new long[planeBreakdown.Count]);
+                sess.DeployModelIndex = 0;
+                sess.DeployCurrentCategory = "planes";
+                sess.Step = SessionStep.DeployWaitingPlaneModel;
+                await SendPrompt(uid, uid, $"✈️ صف آرایی – جنگنده مدل 1/{planeBreakdown.Count}: {planeBreakdown[0].ModelName} – موجودی {planeBreakdown[0].Count:N0}\nچند تا اعزام شود؟ (0 برای رد)", ct: ct);
+                return;
+            }
+            if (sess.Step == SessionStep.DeployWaitingPlaneModel)
+            {
+                if (!TryParseLong(txt, out long amt) || amt < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر.", ct: ct); return; }
+                int idx = sess.DeployModelIndex;
+                if (idx < 0 || idx >= sess.DeployModelCounts.Count) { EndSession(uid); return; }
+                if (amt > sess.DeployModelCounts[idx]) { await SendPrompt(uid, uid, $"❌ موجودی این مدل: {sess.DeployModelCounts[idx]:N0}", ct: ct); return; }
+                sess.DeployModelAmounts[idx] = amt;
+                sess.DeployModelIndex++;
+                if (sess.DeployModelIndex < sess.DeployModelNames.Count)
+                {
+                    await SendPrompt(uid, uid, $"✈️ مدل {sess.DeployModelIndex + 1}/{sess.DeployModelNames.Count}: {sess.DeployModelNames[sess.DeployModelIndex]} – موجودی {sess.DeployModelCounts[sess.DeployModelIndex]:N0}\nچند تا؟ (0 برای رد)", ct: ct);
+                    return;
+                }
+                sess.DeployFighters = sess.DeployModelAmounts.Sum();
+                sess.Step = SessionStep.DeployWaitingBombers;
+                var c = Database.GetCountry(uid, sess.DeployChatId);
+                await SendPrompt(uid, uid, $"🛩 بمب‌افکن:\nموجود: {c?.Bombers ?? 0:N0}", ct: ct);
                 return;
             }
             if (sess.Step == SessionStep.DeployWaitingFighters)
             {
-                if (!TryParseLong(txt, out long fig) || fig < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر.", ct: ct); return; }
+                // Legacy – redirect to per-model
                 var c = Database.GetCountry(uid, sess.DeployChatId);
                 if (c == null) { EndSession(uid); return; }
+                var planeBreakdown = GetTransferBreakdown(c, "planes");
+                if (planeBreakdown.Count > 0)
+                {
+                    sess.DeployModelNames = planeBreakdown.Select(x => x.ModelName).ToList();
+                    sess.DeployModelCounts = planeBreakdown.Select(x => x.Count).ToList();
+                    sess.DeployModelAmounts = new List<long>(new long[planeBreakdown.Count]);
+                    sess.DeployModelIndex = 0;
+                    sess.DeployCurrentCategory = "planes";
+                    sess.Step = SessionStep.DeployWaitingPlaneModel;
+                    await SendPrompt(uid, uid, $"✈️ صف آرایی – جنگنده مدل 1/{planeBreakdown.Count}: {planeBreakdown[0].ModelName} – موجودی {planeBreakdown[0].Count:N0}\nچند تا اعزام شود؟ (0 برای رد)", ct: ct);
+                    return;
+                }
+                if (!TryParseLong(txt, out long fig) || fig < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر.", ct: ct); return; }
                 if (fig > c.Planes) { await SendPrompt(uid, uid, $"❌ موجودی: {c.Planes}", ct: ct); return; }
                 sess.DeployFighters = fig;
                 sess.Step = SessionStep.DeployWaitingBombers;
@@ -3672,9 +4956,22 @@ partial class Program
             }
             if (sess.Step == SessionStep.DeployWaitingBombers)
             {
-                if (!TryParseLong(txt, out long bom) || bom < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر.", ct: ct); return; }
                 var c = Database.GetCountry(uid, sess.DeployChatId);
                 if (c == null) { EndSession(uid); return; }
+                var bomberBreakdown = GetTransferBreakdown(c, "bombers");
+                if (bomberBreakdown.Count > 1)
+                {
+                    // Per-model for bombers
+                    sess.DeployModelNames = bomberBreakdown.Select(x => x.ModelName).ToList();
+                    sess.DeployModelCounts = bomberBreakdown.Select(x => x.Count).ToList();
+                    sess.DeployModelAmounts = new List<long>(new long[bomberBreakdown.Count]);
+                    sess.DeployModelIndex = 0;
+                    sess.DeployCurrentCategory = "bombers";
+                    sess.Step = SessionStep.DeployWaitingBomberModel;
+                    await SendPrompt(uid, uid, $"🛩 صف آرایی – بمب‌افکن مدل 1/{bomberBreakdown.Count}: {bomberBreakdown[0].ModelName} – موجودی {bomberBreakdown[0].Count:N0}\nچند تا اعزام شود؟ (0 برای رد)", ct: ct);
+                    return;
+                }
+                if (!TryParseLong(txt, out long bom) || bom < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر.", ct: ct); return; }
                 if (bom > c.Bombers) { await SendPrompt(uid, uid, $"❌ موجودی: {c.Bombers}", ct: ct); return; }
                 sess.DeployBombers = bom;
                 long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -3693,31 +4990,21 @@ partial class Program
                 long depId = Database.AddDeployment(dep);
                 var initC = new DeploymentContributor { DeploymentId = depId, UserId = uid, Tanks = sess.DeployTanks, Soldiers = sess.DeploySoldiers, Fighters = sess.DeployFighters, Bombers = sess.DeployBombers, Strategy = sess.DeployStrategy, Tactic = sess.DeployTactic };
                 Database.AddDeploymentContributor(initC);
-                if (sess.DeployType == "Defensive")
-                {
-                    var tcDef = Database.GetCountry(sess.DeployTargetId, sess.DeployChatId);
-                    if (tcDef != null)
-                    {
-                        tcDef.Tanks += sess.DeployTanks; tcDef.Soldiers += sess.DeploySoldiers; tcDef.Planes += sess.DeployFighters; tcDef.Bombers += sess.DeployBombers;
-                        tcDef.DefenseTanks += sess.DeployTanks; tcDef.DefenseSoldiers += sess.DeploySoldiers; tcDef.DefenseFighters += sess.DeployFighters;
-                        Database.UpdateCountryFull(tcDef);
-                        Database.ReconcileDefense(tcDef.OwnerId, tcDef.ChatId);
-                    }
-                }
+                //  – defensive troops should NOT appear in target assets, only in separate deployment details
+                // So we do NOT add to target country anymore
                 EndSession(uid);
                 var alliance = Database.GetAllianceById(sess.DeployAllianceId);
                 string allyName = alliance?.Name ?? "اتحاد";
                 var tc = Database.GetCountry(sess.DeployTargetId, sess.DeployChatId);
                 string tName = tc?.Name ?? $"کاربر {sess.DeployTargetId}";
-                var memIds = Database.GetAllianceMembers(sess.DeployAllianceId);
-                var memC = memIds.Select(m => Database.GetCountry(m, sess.DeployChatId)).Where(x => x != null).ToList();
-                string tags = string.Join(" ", memC.Select(x => HtmlTag(x!.OwnerName, x!.OwnerId)));
+                //  – group message should only list participating players, not all alliance members
+                string tags = HtmlTag(c.OwnerName, c.OwnerId); // only initiator at creation
                 string targetTag = tc != null ? HtmlTag(tc.OwnerName, tc.OwnerId) : $"کاربر {sess.DeployTargetId}";
                 bool isOff = sess.DeployType == "Offensive";
-                bool isUni = sess.DeployFormation == "Unified";
+                // Formation is always Unified now (MultiFront removed)
                 string bText = isOff ?
-                    $"🚨 <b>اعلان جنگ و صف‌آرایی تهاجمی!</b> ⚔️\n\n👑 اتحاد <b>«{allyName}»</b> علیه کشور <b>«{tName}»</b> (مالک: {targetTag}) صف‌آرایی کرد!\n🎯 نوع آرایش: <b>{(isUni ? "یکپارچه" : "چندجبهه‌ای")}</b>\n⏱ مدت: <b>{sess.DeployDuration} ساعت</b> (پایان: {FormatTime(endMs)})\n\n💥 <b>نیروهای اولیه:</b>\n🪖 سرباز: {sess.DeploySoldiers:N0} | 🛡 تانک: {sess.DeployTanks:N0}\n✈️ جنگنده: {sess.DeployFighters:N0} | 🛩 بمب‌افکن: {sess.DeployBombers:N0}\n\n👥 اعضای اتحاد:\n{tags}" :
-                    $"🛡 <b>اعلام صف‌آرایی دفاعی!</b> 🏰\n\n👑 اتحاد <b>«{allyName}»</b> برای حمایت از کشور <b>«{tName}»</b> (مالک: {targetTag}) خط پدافندی تشکیل داد!\n🎯 نوع آرایش: <b>{(isUni ? "یکپارچه" : "چندجبهه‌ای")}</b>\n⏱ مدت: <b>{sess.DeployDuration} ساعت</b> (پایان: {FormatTime(endMs)})\n\n🛡 <b>نیروهای پشتیبان:</b>\n🪖 سرباز: {sess.DeploySoldiers:N0} | 🛡 تانک: {sess.DeployTanks:N0}\n✈️ جنگنده: {sess.DeployFighters:N0} | 🛩 بمب‌افکن: {sess.DeployBombers:N0}\n\n👥 اعضای اتحاد:\n{tags}";
+                    $"🚨 <b>اعلان جنگ و صف‌آرایی تهاجمی!</b> ⚔️\n\n👑 اتحاد <b>«{allyName}»</b> علیه کشور <b>«{tName}»</b> (مالک: {targetTag}) صف‌آرایی کرد!\n⏱ مدت: <b>{sess.DeployDuration} ساعت</b> (پایان: {FormatTime(endMs)})\n\n💥 <b>نیروهای اولیه:</b>\n🪖 سرباز: {sess.DeploySoldiers:N0} | 🛡 تانک: {sess.DeployTanks:N0}\n✈️ جنگنده: {sess.DeployFighters:N0} | 🛩 بمب‌افکن: {sess.DeployBombers:N0}\n\n👥 مشارکت‌کنندگان:\n{tags}\n\n🎯 استراتژی: {sess.DeployStrategy} | تاکتیک: {sess.DeployTactic}" :
+                    $"🛡 <b>اعلام صف‌آرایی دفاعی!</b> 🏰\n\n👑 اتحاد <b>«{allyName}»</b> برای حمایت از کشور <b>«{tName}»</b> (مالک: {targetTag}) خط پدافندی تشکیل داد!\n⏱ مدت: <b>{sess.DeployDuration} ساعت</b> (پایان: {FormatTime(endMs)})\n\n🛡 <b>نیروهای پشتیبان:</b>\n🪖 سرباز: {sess.DeploySoldiers:N0} | 🛡 تانک: {sess.DeployTanks:N0}\n✈️ جنگنده: {sess.DeployFighters:N0} | 🛩 بمب‌افکن: {sess.DeployBombers:N0}\n\n👥 مشارکت‌کنندگان:\n{tags}\n\n🎯 استراتژی: {sess.DeployStrategy} | تاکتیک: {sess.DeployTactic}";
                 string fCat = isOff ? "OffensiveDeploy" : "DefensiveDeploy";
                 var photos = Database.GetFactionFlags(fCat);
                 // FIX(1): دکمهٔ صحیح (dep_join) — قبلاً depjoin بود و کار نمی‌کرد
@@ -3740,6 +5027,68 @@ partial class Program
                     try { var ch = await bot.GetChatAsync(sess.DeployChatId, ct); if (!string.IsNullOrEmpty(ch.Title)) gTitle = ch.Title; } catch { }
                     try { await bot.SendTextMessageAsync(sess.DeployTargetId, $"⚠️ هشدار: صف‌آرایی تهاجمی علیه شما در «{gTitle}»!\n⏱ {sess.DeployDuration} ساعت دیگر", cancellationToken: ct); } catch { }
                 }
+                return;
+            }
+
+            if (sess.Step == SessionStep.DeployWaitingBomberModel)
+            {
+                if (!TryParseLong(txt, out long amt) || amt < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر.", ct: ct); return; }
+                int idx = sess.DeployModelIndex;
+                if (idx < 0 || idx >= sess.DeployModelCounts.Count) { EndSession(uid); return; }
+                if (amt > sess.DeployModelCounts[idx]) { await SendPrompt(uid, uid, $"❌ موجودی این مدل: {sess.DeployModelCounts[idx]:N0}", ct: ct); return; }
+                sess.DeployModelAmounts[idx] = amt;
+                sess.DeployModelIndex++;
+                if (sess.DeployModelIndex < sess.DeployModelNames.Count)
+                {
+                    await SendPrompt(uid, uid, $"🛩 مدل {sess.DeployModelIndex + 1}/{sess.DeployModelNames.Count}: {sess.DeployModelNames[sess.DeployModelIndex]} – موجودی {sess.DeployModelCounts[sess.DeployModelIndex]:N0}\nچند تا؟ (0 برای رد)", ct: ct);
+                    return;
+                }
+                sess.DeployBombers = sess.DeployModelAmounts.Sum();
+                long nowMs2 = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                long endMs2 = nowMs2 + sess.DeployDuration * 3600000L;
+                var dep2 = new Deployment
+                {
+                    ChatId = sess.DeployChatId, AllianceId = sess.DeployAllianceId, InitiatorId = uid, TargetUserId = sess.DeployTargetId,
+                    Type = sess.DeployType, DurationHours = sess.DeployDuration, FormationType = sess.DeployFormation,
+                    Strategy = sess.DeployStrategy, Tactic = sess.DeployTactic,
+                    Tanks = sess.DeployTanks, Soldiers = sess.DeploySoldiers, Fighters = sess.DeployFighters, Bombers = sess.DeployBombers,
+                    CreatedAtMs = nowMs2, EndAtMs = endMs2, LastWarnMs = nowMs2
+                };
+                var c2 = Database.GetCountry(uid, sess.DeployChatId);
+                if (c2 != null)
+                {
+                    c2.Tanks -= sess.DeployTanks; c2.Soldiers -= sess.DeploySoldiers; c2.Planes -= sess.DeployFighters; c2.Bombers -= sess.DeployBombers;
+                    Database.UpdateCountryFull(c2);
+                    Database.ReconcileDefense(uid, sess.DeployChatId);
+                }
+                long depId2 = Database.AddDeployment(dep2);
+                var initC2 = new DeploymentContributor { DeploymentId = depId2, UserId = uid, Tanks = sess.DeployTanks, Soldiers = sess.DeploySoldiers, Fighters = sess.DeployFighters, Bombers = sess.DeployBombers, Strategy = sess.DeployStrategy, Tactic = sess.DeployTactic };
+                Database.AddDeploymentContributor(initC2);
+                EndSession(uid);
+                var alliance2 = Database.GetAllianceById(sess.DeployAllianceId);
+                string allyName2 = alliance2?.Name ?? "اتحاد";
+                var tc2 = Database.GetCountry(sess.DeployTargetId, sess.DeployChatId);
+                string tName2 = tc2?.Name ?? $"کاربر {sess.DeployTargetId}";
+                string tags2 = c2 != null ? HtmlTag(c2.OwnerName, c2.OwnerId) : "";
+                string targetTag2 = tc2 != null ? HtmlTag(tc2.OwnerName, tc2.OwnerId) : $"کاربر {sess.DeployTargetId}";
+                bool isOff2 = sess.DeployType == "Offensive";
+                string bText2 = isOff2 ?
+                    $"🚨 <b>اعلان جنگ و صف‌آرایی تهاجمی!</b> ⚔️\n\n👑 اتحاد <b>«{allyName2}»</b> علیه کشور <b>«{tName2}»</b> (مالک: {targetTag2}) صف‌آرایی کرد!\n⏱ مدت: <b>{sess.DeployDuration} ساعت</b> (پایان: {FormatTime(endMs2)})\n\n💥 <b>نیروهای اولیه:</b>\n🪖 سرباز: {sess.DeploySoldiers:N0} | 🛡 تانک: {sess.DeployTanks:N0}\n✈️ جنگنده: {sess.DeployFighters:N0} | 🛩 بمب‌افکن: {sess.DeployBombers:N0}\n\n👥 مشارکت‌کنندگان:\n{tags2}\n\n🎯 استراتژی: {sess.DeployStrategy} | تاکتیک: {sess.DeployTactic}" :
+                    $"🛡 <b>اعلام صف‌آرایی دفاعی!</b> 🏰\n\n👑 اتحاد <b>«{allyName2}»</b> برای حمایت از کشور <b>«{tName2}»</b> (مالک: {targetTag2}) خط پدافندی تشکیل داد!\n⏱ مدت: <b>{sess.DeployDuration} ساعت</b> (پایان: {FormatTime(endMs2)})\n\n🛡 <b>نیروهای پشتیبان:</b>\n🪖 سرباز: {sess.DeploySoldiers:N0} | 🛡 تانک: {sess.DeployTanks:N0}\n✈️ جنگنده: {sess.DeployFighters:N0} | 🛩 بمب‌افکن: {sess.DeployBombers:N0}\n\n👥 مشارکت‌کنندگان:\n{tags2}\n\n🎯 استراتژی: {sess.DeployStrategy} | تاکتیک: {sess.DeployTactic}";
+                string fCat2 = isOff2 ? "OffensiveDeploy" : "DefensiveDeploy";
+                var photos2 = Database.GetFactionFlags(fCat2);
+                var joinKb2 = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("⚔️ مشارکت و اعزام نیرو", $"dep_join:{depId2}") } });
+                Message depMsg2;
+                if (photos2.Count > 0)
+                {
+                    string rPhoto = photos2[rng.Next(photos2.Count)];
+                    try { depMsg2 = await bot.SendPhotoAsync(sess.DeployChatId, new InputOnlineFile(rPhoto), caption: bText2, parseMode: ParseMode.Html, replyMarkup: joinKb2, cancellationToken: ct); }
+                    catch { depMsg2 = await bot.SendTextMessageAsync(sess.DeployChatId, bText2, parseMode: ParseMode.Html, replyMarkup: joinKb2, cancellationToken: ct); }
+                }
+                else { depMsg2 = await bot.SendTextMessageAsync(sess.DeployChatId, bText2, parseMode: ParseMode.Html, replyMarkup: joinKb2, cancellationToken: ct); }
+                try { Database.UpdateDeploymentAnnounceMsg(depId2, depMsg2.MessageId); } catch { }
+                try { await bot.PinChatMessageAsync(sess.DeployChatId, depMsg2.MessageId, disableNotification: false, cancellationToken: ct); } catch { }
+                await SendTemp(uid, "✅ صف‌آرایی ثبت و در گروه اعلام شد.", ct: ct);
                 return;
             }
 
@@ -3793,17 +5142,9 @@ partial class Program
                 Database.UpdateDeploymentForces(dep);
                 var contrib = new DeploymentContributor { DeploymentId = dep.Id, UserId = uid, Tanks = sess.DeployJoinTanks, Soldiers = sess.DeployJoinSoldiers, Fighters = sess.DeployJoinFighters, Bombers = sess.DeployJoinBombers, Strategy = sess.DeployJoinStrategy, Tactic = sess.DeployJoinTactic };
                 Database.AddDeploymentContributor(contrib);
-                if (dep.Type == "Defensive")
-                {
-                    var tcDef = Database.GetCountry(dep.TargetUserId, dep.ChatId);
-                    if (tcDef != null)
-                    {
-                        tcDef.Tanks += sess.DeployJoinTanks; tcDef.Soldiers += sess.DeployJoinSoldiers; tcDef.Planes += sess.DeployJoinFighters; tcDef.Bombers += sess.DeployJoinBombers;
-                        tcDef.DefenseTanks += sess.DeployJoinTanks; tcDef.DefenseSoldiers += sess.DeployJoinSoldiers; tcDef.DefenseFighters += sess.DeployJoinFighters;
-                        Database.UpdateCountryFull(tcDef);
-                        Database.ReconcileDefense(tcDef.OwnerId, tcDef.ChatId);
-                    }
-                }
+                //  – defensive join no longer adds to target assets, only tracked separately
+                // Refresh pinned deployment announcement to list all participants (only participating players)
+                try { await RefreshDeploymentAnnouncement(dep.Id, ct); } catch { }
                 EndSession(uid);
                 await SendTemp(uid, "✅ نیروها اعزام شدند!", ct: ct);
                 string announce = $"🚀 کشور «{c.Name}» ({c.OwnerName}) نیروی کمکی اعزام کرد: {sess.DeployJoinTanks:N0} تانک, {sess.DeployJoinSoldiers:N0} سرباز, {sess.DeployJoinFighters:N0} جنگنده, {sess.DeployJoinBombers:N0} بمب‌افکن";
@@ -3811,18 +5152,186 @@ partial class Program
                 return;
             }
 
-            // Attack steps
+            // Attack steps –  per-model
             if (sess.Step == SessionStep.AttackWaitingTanks)
             {
-                if (!TryParseLong(txt, out long tanks) || tanks < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر.", ct: ct); return; }
+                // Legacy fallback – should not happen now, redirect to per-model
                 var atk = Database.GetCountry(uid, sess.AttackChatId);
                 if (atk == null) { EndSession(uid); return; }
-                if (tanks > atk.Tanks) { await SendPrompt(uid, uid, $"❌ موجودی: {atk.Tanks}", ct: ct); return; }
-                sess.AttackTanks = tanks;
+                var breakdown = GetTransferBreakdown(atk, "tanks");
+                if (breakdown.Count > 0)
+                {
+                    sess.AttackModelNames = breakdown.Select(x => x.ModelName).ToList();
+                    sess.AttackModelCounts = breakdown.Select(x => x.Count).ToList();
+                    sess.AttackModelAmounts = new List<long>(new long[breakdown.Count]);
+                    sess.AttackModelIndex = 0;
+                    sess.AttackCurrentCategory = "tanks";
+                    sess.Step = SessionStep.AttackWaitingTankModel;
+                    await SendPrompt(uid, uid, $"🛡 حمله – تانک مدل 1/{breakdown.Count}: {breakdown[0].ModelName} – موجودی {breakdown[0].Count:N0}\nچند تا اعزام شود؟ (0 برای رد)", ct: ct);
+                    return;
+                }
+                sess.AttackTanks = 0;
                 sess.Step = SessionStep.AttackWaitingSoldiers;
-            await SendPrompt(uid, uid, "🪖 تعداد سربازان اعزامی را وارد کنید.\n" + InventoryLine(atk.Soldiers), ct: ct);
+                await SendPrompt(uid, uid, "🪖 تعداد سربازان اعزامی را وارد کنید.\n" + InventoryLine(atk.Soldiers), ct: ct);
                 return;
             }
+
+            if (sess.Step == SessionStep.AttackWaitingModelAmount)
+            {
+                //  – naval per-model amount
+                if (!TryParseLong(txt, out long amt) || amt < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر (0 برای رد).", ct: ct); return; }
+                int idx = sess.AttackModelIndex;
+                if (idx < 0 || idx >= sess.AttackModelCounts.Count) { EndSession(uid); return; }
+                if (amt > sess.AttackModelCounts[idx]) { await SendPrompt(uid, uid, $"❌ موجودی این مدل: {sess.AttackModelCounts[idx]:N0}", ct: ct); return; }
+                sess.AttackModelAmounts[idx] = amt;
+                sess.AttackModelIndex++;
+                if (sess.AttackModelIndex < sess.AttackModelNames.Count)
+                {
+                    var next = sess.AttackModelNames[sess.AttackModelIndex];
+                    var nextCnt = sess.AttackModelCounts[sess.AttackModelIndex];
+                    string cat = next.Contains(':') ? next.Split(':')[0] : "naval";
+                    string modelOnly = next.Contains(':') ? next.Split(':',2)[1] : next;
+                    await SendPrompt(uid, uid, $"⚓ حمله دریایی – مدل {sess.AttackModelIndex + 1}/{sess.AttackModelNames.Count}: {modelOnly} ({cat}) – موجودی {nextCnt:N0}\nچند تا اعزام شود؟ (0 برای رد)", ct: ct);
+                    return;
+                }
+                // All naval models entered – finalize invasion
+                long totalBoats = 0, totalSubs = 0, totalBS = 0;
+                var boatModelsList = new List<string>();
+                var subModelsList = new List<string>();
+                var bsModelsList = new List<string>();
+                for (int i = 0; i < sess.AttackModelNames.Count; i++)
+                {
+                    string full = sess.AttackModelNames[i];
+                    long amount = sess.AttackModelAmounts[i];
+                    if (amount <= 0) continue;
+                    string[] partsArr = full.Split(':', 2);
+                    string cat = partsArr.Length == 2 ? partsArr[0] : "boats";
+                    string model = partsArr.Length == 2 ? partsArr[1] : full;
+                    if (cat == "boats") { totalBoats += amount; boatModelsList.Add($"{model}:{amount}"); }
+                    else if (cat == "submarines") { totalSubs += amount; subModelsList.Add($"{model}:{amount}"); }
+                    else if (cat == "battleships") { totalBS += amount; bsModelsList.Add($"{model}:{amount}"); }
+                }
+                if (totalBoats + totalSubs + totalBS == 0)
+                {
+                    EndSession(uid);
+                    await SendTemp(uid, "❌ هیچ نیروی دریایی انتخاب نشد – حمله لغو شد.", ct: ct);
+                    return;
+                }
+                var attackerCountry = Database.GetCountry(uid, sess.AttackChatId);
+                var defenderCountry = Database.GetCountry(sess.AttackTargetId, sess.AttackChatId);
+                if (attackerCountry == null || defenderCountry == null) { EndSession(uid); await SendTemp(uid, "❌ کشور یافت نشد.", ct: ct); return; }
+
+                // Fuel check for boats
+                if (totalBoats > 0 && attackerCountry.BoatsFuel < 20)
+                {
+                    EndSession(uid);
+                    await SendTemp(uid, $"⛽ سوخت قایق‌های شما {attackerCountry.BoatsFuel}% است – نیاز به سوخت‌گیری دارید! دستور «سوخت‌گیری قایق» را بزنید.", ct: ct);
+                    return;
+                }
+                // Attack shield check
+                if (Database.IsAttackShieldActive(defenderCountry.OwnerId, defenderCountry.ChatId))
+                {
+                    long until = Database.GetAttackShieldUntilMs(defenderCountry.OwnerId, defenderCountry.ChatId);
+                    long leftH = (until - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) / 3600000;
+                    if (leftH < 1) leftH = 1;
+                    EndSession(uid);
+                    await SendTemp(uid, $"🛡 {defenderCountry.Name} به دلیل 5 حمله اخیر تا {leftH} ساعت دیگر سپر 16 ساعته دارد و قابل حمله نیست!", ct: ct);
+                    return;
+                }
+                // Create delayed invasion – fleet arrives after asset update (user-friendly 5 min, processed by both timers)
+                long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                long arriveMs = nowMs + 5 * 60 * 1000; // 5 minutes delay, processed by transfer timer (60s) and asset update
+
+                var inv = new NavalInvasion
+                {
+                    ChatId = sess.AttackChatId,
+                    AttackerId = uid,
+                    DefenderId = sess.AttackTargetId,
+                    Boats = totalBoats,
+                    Submarines = totalSubs,
+                    Battleships = totalBS,
+                    BoatModels = string.Join(";", boatModelsList),
+                    SubModels = string.Join(";", subModelsList),
+                    BattleshipModels = string.Join(";", bsModelsList),
+                    Strategy = sess.AttackNavalStrategy,
+                    Tactic = sess.AttackNavalTactic,
+                    CreatedAtMs = nowMs,
+                    ArriveAtMs = arriveMs,
+                    AttackerName = attackerCountry.Name,
+                    DefenderName = defenderCountry.Name
+                };
+                Database.AddNavalInvasion(inv);
+
+                // Deduct from attacker and mark at sea
+                attackerCountry.Boats = Math.Max(0, attackerCountry.Boats - totalBoats);
+                attackerCountry.Submarines = Math.Max(0, attackerCountry.Submarines - totalSubs);
+                attackerCountry.Battleships = Math.Max(0, attackerCountry.Battleships - totalBS);
+                attackerCountry.BoatsAtSea += totalBoats;
+                attackerCountry.SubmarinesAtSea += totalSubs;
+                attackerCountry.BattleshipsAtSea += totalBS;
+                // Deduct equipment models
+                foreach (var bm in boatModelsList)
+                {
+                    var sp = bm.Split(':');
+                    if (sp.Length != 2) continue;
+                    if (!long.TryParse(sp[1], out long cnt)) continue;
+                    Database.AddEquipmentModel(uid, sess.AttackChatId, "Boats", sp[0], -cnt);
+                }
+                foreach (var sm in subModelsList)
+                {
+                    var sp = sm.Split(':');
+                    if (sp.Length != 2) continue;
+                    if (!long.TryParse(sp[1], out long cnt)) continue;
+                    Database.AddEquipmentModel(uid, sess.AttackChatId, "Submarines", sp[0], -cnt);
+                }
+                foreach (var bsm in bsModelsList)
+                {
+                    var sp = bsm.Split(':');
+                    if (sp.Length != 2) continue;
+                    if (!long.TryParse(sp[1], out long cnt)) continue;
+                    Database.AddEquipmentModel(uid, sess.AttackChatId, "Battleships", sp[0], -cnt);
+                }
+                Database.UpdateCountryFull(attackerCountry);
+                Database.ReconcileDefense(uid, sess.AttackChatId);
+
+                EndSession(uid);
+                await SendTemp(uid, $"⚓ ناوگان اعزام شد!\n\n🚤 قایق: {totalBoats} | ⚓ زیردریایی: {totalSubs} | 🚢 نبردناو: {totalBS}\n🎯 هدف: {defenderCountry.Name}\n📍 استراتژی: {sess.AttackNavalStrategy} / تاکتیک: {sess.AttackNavalTactic}\n\n⏳ ناوگان پس از آپدیت دارایی به مقصد می‌رسد و به مدافع اطلاع داده می‌شود.\n🌊 سوخت قایق‌ها پس از نبرد تمام می‌شود و نیاز به سوخت‌گیری دارد.", ct: ct);
+                try { await SendTemp(sess.AttackChatId, $"⚓ {attackerCountry.Name} ناوگان دریایی به سمت {defenderCountry.Name} اعزام کرد!\n🚤{totalBoats} ⚓{totalSubs} 🚢{totalBS} – رسیدن پس از آپدیت دارایی", ct: ct); } catch { }
+                return;
+            }
+
+            if (sess.Step == SessionStep.AttackWaitingTankModel)
+            {
+                if (!TryParseLong(txt, out long amt) || amt < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر (0 برای رد).", ct: ct); return; }
+                int idx = sess.AttackModelIndex;
+                if (idx < 0 || idx >= sess.AttackModelCounts.Count) { EndSession(uid); return; }
+                if (amt > sess.AttackModelCounts[idx]) { await SendPrompt(uid, uid, $"❌ موجودی این مدل: {sess.AttackModelCounts[idx]:N0}", ct: ct); return; }
+                sess.AttackModelAmounts[idx] = amt;
+                sess.AttackModelIndex++;
+                if (sess.AttackModelIndex < sess.AttackModelNames.Count)
+                {
+                    var nextName = sess.AttackModelNames[sess.AttackModelIndex];
+                    var nextCount = sess.AttackModelCounts[sess.AttackModelIndex];
+                    await SendPrompt(uid, uid, $"🛡 حمله – تانک مدل {sess.AttackModelIndex + 1}/{sess.AttackModelNames.Count}: {nextName} – موجودی {nextCount:N0}\nچند تا اعزام شود؟ (0 برای رد)", ct: ct);
+                    return;
+                }
+                // Finished tanks – calculate total and move to soldiers
+                sess.AttackTanks = sess.AttackModelAmounts.Sum();
+                // Save final tank breakdown for war engine
+                sess.AttackTankModelNamesFinal = new List<string>(sess.AttackModelNames);
+                sess.AttackTankModelAmountsFinal = new List<long>(sess.AttackModelAmounts);
+                // Reset for next category
+                sess.AttackModelNames = new List<string>();
+                sess.AttackModelCounts = new List<long>();
+                sess.AttackModelAmounts = new List<long>();
+                sess.AttackModelIndex = 0;
+                sess.AttackCurrentCategory = "soldiers";
+                sess.Step = SessionStep.AttackWaitingSoldiers;
+                var atk = Database.GetCountry(uid, sess.AttackChatId);
+                await SendPrompt(uid, uid, "🪖 تعداد سربازان اعزامی را وارد کنید.\n" + InventoryLine(atk?.Soldiers ?? 0), ct: ct);
+                return;
+            }
+
             if (sess.Step == SessionStep.AttackWaitingSoldiers)
             {
                 if (!TryParseLong(txt, out long soldiers) || soldiers < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر.", ct: ct); return; }
@@ -3830,56 +5339,114 @@ partial class Program
                 if (atk == null) { EndSession(uid); return; }
                 if (soldiers > atk.Soldiers) { await SendPrompt(uid, uid, $"❌ موجودی: {atk.Soldiers}", ct: ct); return; }
                 sess.AttackSoldiers = soldiers;
-                sess.Step = SessionStep.AttackWaitingFighters;
-            await SendPrompt(uid, uid, "✈️ تعداد جنگنده‌های اعزامی را وارد کنید.\n" + InventoryLine(atk.Planes), ct: ct);
+
+                // Now per-model planes
+                var planeBreakdown = GetTransferBreakdown(atk, "planes");
+                if (planeBreakdown.Count == 0)
+                {
+                    sess.Step = SessionStep.AttackWaitingBombers;
+                    await SendPrompt(uid, uid, "🛩 تعداد بمب‌افکن‌های اعزامی را وارد کنید.\n" + InventoryLine(atk.Bombers), ct: ct);
+                    return;
+                }
+                if (planeBreakdown.Count == 1)
+                {
+                    sess.AttackModelNames = new List<string> { planeBreakdown[0].ModelName };
+                    sess.AttackModelCounts = new List<long> { planeBreakdown[0].Count };
+                    sess.AttackModelAmounts = new List<long> { 0 };
+                    sess.AttackModelIndex = 0;
+                    sess.AttackCurrentCategory = "planes";
+                    sess.Step = SessionStep.AttackWaitingPlaneModel;
+                    await SendPrompt(uid, uid, $"✈️ جنگنده مدل {planeBreakdown[0].ModelName} – موجودی {planeBreakdown[0].Count:N0}\nچند تا اعزام شود؟", ct: ct);
+                    return;
+                }
+                sess.AttackModelNames = planeBreakdown.Select(x => x.ModelName).ToList();
+                sess.AttackModelCounts = planeBreakdown.Select(x => x.Count).ToList();
+                sess.AttackModelAmounts = new List<long>(new long[planeBreakdown.Count]);
+                sess.AttackModelIndex = 0;
+                sess.AttackCurrentCategory = "planes";
+                sess.Step = SessionStep.AttackWaitingPlaneModel;
+                await SendPrompt(uid, uid, $"✈️ حمله – جنگنده‌ها – {planeBreakdown.Count} مدل\n🔧 مدل 1/{planeBreakdown.Count}: {planeBreakdown[0].ModelName} – {planeBreakdown[0].Count:N0}\nچند تا اعزام شود؟ (0 برای رد)", ct: ct);
                 return;
             }
+
+            if (sess.Step == SessionStep.AttackWaitingPlaneModel)
+            {
+                if (!TryParseLong(txt, out long amt) || amt < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر.", ct: ct); return; }
+                int idx = sess.AttackModelIndex;
+                if (idx < 0 || idx >= sess.AttackModelCounts.Count) { EndSession(uid); return; }
+                if (amt > sess.AttackModelCounts[idx]) { await SendPrompt(uid, uid, $"❌ موجودی: {sess.AttackModelCounts[idx]:N0}", ct: ct); return; }
+                sess.AttackModelAmounts[idx] = amt;
+                sess.AttackModelIndex++;
+                if (sess.AttackModelIndex < sess.AttackModelNames.Count)
+                {
+                    await SendPrompt(uid, uid, $"✈️ مدل {sess.AttackModelIndex + 1}/{sess.AttackModelNames.Count}: {sess.AttackModelNames[sess.AttackModelIndex]} – موجودی {sess.AttackModelCounts[sess.AttackModelIndex]:N0}\nچند تا؟ (0 برای رد)", ct: ct);
+                    return;
+                }
+                sess.AttackFighters = sess.AttackModelAmounts.Sum();
+                sess.AttackPlaneModelNamesFinal = new List<string>(sess.AttackModelNames);
+                sess.AttackPlaneModelAmountsFinal = new List<long>(sess.AttackModelAmounts);
+                // Now bombers per-model
+                var atk = Database.GetCountry(uid, sess.AttackChatId);
+                var bomberBreakdown = GetTransferBreakdown(atk, "bombers");
+                if (bomberBreakdown.Count == 0)
+                {
+                    if (sess.AttackFighters == 0) { await RunAttackBattle(uid, sess, ct); return; }
+                    sess.Step = SessionStep.AttackWaitingAirStrategy;
+                    var kb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("✈️ برتری هوایی", "attack_air_strategy:1") }, new[] { InlineKeyboardButton.WithCallbackData("💣 بمباران راهبردی", "attack_air_strategy:2") } });
+                    await SendPrompt(uid, uid, AirAttackStrategyGuide, kb, ct);
+                    return;
+                }
+                sess.AttackModelNames = bomberBreakdown.Select(x => x.ModelName).ToList();
+                sess.AttackModelCounts = bomberBreakdown.Select(x => x.Count).ToList();
+                sess.AttackModelAmounts = new List<long>(new long[bomberBreakdown.Count]);
+                sess.AttackModelIndex = 0;
+                sess.AttackCurrentCategory = "bombers";
+                sess.Step = SessionStep.AttackWaitingBomberModel;
+                await SendPrompt(uid, uid, $"🛩 بمب‌افکن مدل 1/{bomberBreakdown.Count}: {bomberBreakdown[0].ModelName} – {bomberBreakdown[0].Count:N0}\nچند تا اعزام شود؟ (0 برای رد)", ct: ct);
+                return;
+            }
+
+            if (sess.Step == SessionStep.AttackWaitingBomberModel)
+            {
+                if (!TryParseLong(txt, out long amt) || amt < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر.", ct: ct); return; }
+                int idx = sess.AttackModelIndex;
+                if (idx < 0 || idx >= sess.AttackModelCounts.Count) { EndSession(uid); return; }
+                if (amt > sess.AttackModelCounts[idx]) { await SendPrompt(uid, uid, $"❌ موجودی: {sess.AttackModelCounts[idx]:N0}", ct: ct); return; }
+                sess.AttackModelAmounts[idx] = amt;
+                sess.AttackModelIndex++;
+                if (sess.AttackModelIndex < sess.AttackModelNames.Count)
+                {
+                    await SendPrompt(uid, uid, $"🛩 مدل {sess.AttackModelIndex + 1}/{sess.AttackModelNames.Count}: {sess.AttackModelNames[sess.AttackModelIndex]} – موجودی {sess.AttackModelCounts[sess.AttackModelIndex]:N0}\nچند تا؟ (0 برای رد)", ct: ct);
+                    return;
+                }
+                sess.AttackBombers = sess.AttackModelAmounts.Sum();
+                sess.AttackBomberModelNamesFinal = new List<string>(sess.AttackModelNames);
+                sess.AttackBomberModelAmountsFinal = new List<long>(sess.AttackModelAmounts);
+                if (sess.AttackFighters == 0 && sess.AttackBombers == 0) { await RunAttackBattle(uid, sess, ct); return; }
+                sess.Step = SessionStep.AttackWaitingAirStrategy;
+                var kb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("✈️ برتری هوایی", "attack_air_strategy:1") }, new[] { InlineKeyboardButton.WithCallbackData("💣 بمباران راهبردی", "attack_air_strategy:2") } });
+                await SendPrompt(uid, uid, AirAttackStrategyGuide, kb, ct);
+                return;
+            }
+
             if (sess.Step == SessionStep.AttackWaitingFighters)
             {
+                // Legacy – redirect to new per-model flow for planes
                 if (!TryParseLong(txt, out long fighters) || fighters < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر.", ct: ct); return; }
-                var atk = Database.GetCountry(uid, sess.AttackChatId);
-                if (atk == null) { EndSession(uid); return; }
-                if (fighters > atk.Planes) { await SendPrompt(uid, uid, $"❌ موجودی: {atk.Planes}", ct: ct); return; }
                 sess.AttackFighters = fighters;
                 sess.Step = SessionStep.AttackWaitingBombers;
-            await SendPrompt(uid, uid, "🛩 تعداد بمب‌افکن‌های اعزامی را وارد کنید.\n" + InventoryLine(atk.Bombers), ct: ct);
+                var atk = Database.GetCountry(uid, sess.AttackChatId);
+                await SendPrompt(uid, uid, "🛩 تعداد بمب‌افکن‌های اعزامی را وارد کنید.\n" + InventoryLine(atk?.Bombers ?? 0), ct: ct);
                 return;
             }
             if (sess.Step == SessionStep.AttackWaitingBombers)
             {
                 if (!TryParseLong(txt, out long bombers) || bombers < 0) { await SendPrompt(uid, uid, "❌ عدد معتبر.", ct: ct); return; }
-                var atk = Database.GetCountry(uid, sess.AttackChatId);
-                if (atk == null) { EndSession(uid); return; }
-                if (bombers > atk.Bombers) { await SendPrompt(uid, uid, $"❌ موجودی: {atk.Bombers}", ct: ct); return; }
                 sess.AttackBombers = bombers;
                 if (sess.AttackFighters == 0 && sess.AttackBombers == 0) { await RunAttackBattle(uid, sess, ct); return; }
                 sess.Step = SessionStep.AttackWaitingAirStrategy;
-                // FIX(1): callback صحیح attack_air_strategy (قبلاً attackair_strategy اشتباه بود)
-                var kb = new InlineKeyboardMarkup(new[]
-                {
-                    new[]
-                    {
-                        InlineKeyboardButton.WithCallbackData(
-                            "✈️ برتری هوایی",
-                            "attack_air_strategy:1"
-                        )
-                    },
-                    new[]
-                    {
-                        InlineKeyboardButton.WithCallbackData(
-                            "💣 بمباران راهبردی",
-                            "attack_air_strategy:2"
-                        )
-                    }
-                });
-
-                await SendPrompt(
-                    uid,
-                    uid,
-                    AirAttackStrategyGuide,
-                    kb,
-                    ct
-                );
+                var kb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("✈️ برتری هوایی", "attack_air_strategy:1") }, new[] { InlineKeyboardButton.WithCallbackData("💣 بمباران راهبردی", "attack_air_strategy:2") } });
+                await SendPrompt(uid, uid, AirAttackStrategyGuide, kb, ct);
                 return;
             }
         }
@@ -3938,7 +5505,7 @@ partial class Program
                 var mems = Database.GetAllianceMembers(aid);
                 int dailyLimit = mems.Count <= 5 ? 1 : (mems.Count <= 10 ? 2 : (mems.Count <= 20 ? 3 : 5));
                 if (Database.GetRecentAllianceDeploymentsCount(aid, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 86400000L) >= dailyLimit && !Database.HasGroupLockExemption(cid)) { await SendTemp(uid, $"⛔ سقف روزانه ({dailyLimit}) پر شد.", ct: ct); return; }
-                var tgts = isOff ? Database.GetCountriesByChatId(cid).Where(c => !mems.Contains(c.OwnerId)).ToList() : mems.Select(m => Database.GetCountry(m, cid)).Where(c => c != null).ToList()!;
+                var tgts = isOff ? Database.GetAttackableTargets(cid, uid) : mems.Select(m => Database.GetCountry(m, cid)).Where(c => c != null).ToList()!;
                 if (tgts.Count == 0) { await SendTemp(uid, isOff ? "❌ هیچ هدفی نیست." : "❌ عضو معتبری برای دفاع نیست.", ct: ct); return; }
                 var tkb = tgts.Select(t => new[] { InlineKeyboardButton.WithCallbackData($"🏳️ {t!.Name} ({t.OwnerName})", $"dep_target:{cid}:{aid}:{(isOff ? "Off" : "Def")}:{t.OwnerId}") }).ToArray();
                 await SendPrompt(uid, uid, $"⚔️ صف‌آرایی {(isOff ? "تهاجمی" : "دفاعی")}\n🎯 کشور:", new InlineKeyboardMarkup(tkb), ct);
@@ -3958,16 +5525,21 @@ partial class Program
             if (chatIds.Count == 1)
             {
                 long cid = chatIds[0];
-                var targets = Database.GetCountriesByChatId(cid).Where(c => c.OwnerId != uid).ToList();
+                var targets = Database.GetAttackableTargets(cid, uid);
                 if (targets.Count == 0) { await SendTemp(uid, "هیچ هدفی نیست.", ct: ct); return; }
-                var kb = targets.Select(t => new[] { InlineKeyboardButton.WithCallbackData(t.OwnerName, $"attack_target:{cid}:{t.OwnerId}") }).ToArray();
+                var kb = targets.Select(t => new[] { InlineKeyboardButton.WithCallbackData($"{t.Name} ({t.OwnerName})", $"attack_target:{cid}:{t.OwnerId}") }).ToArray();
                 sessions[uid] = new UserSession { Step = SessionStep.AttackWaitingTarget, AttackChatId = cid };
                 await SendPrompt(uid, uid, "🎯 هدف:", new InlineKeyboardMarkup(kb), ct);
             }
             else
             {
-                var allC = Database.GetAllCountries();
-                var kb = chatIds.Select(cid => { var n = allC.FirstOrDefault(c => c.ChatId == cid && c.OwnerId == uid)?.Name ?? cid.ToString(); return new[] { InlineKeyboardButton.WithCallbackData(n, $"attack_group:{cid}") }; }).ToArray();
+                // Optimized: use GetCountriesByChatId per chat already optimized, avoid GetAllCountries
+                var kb = chatIds.Select(cid =>
+                {
+                    var country = Database.GetCountry(uid, cid);
+                    var name = country?.Name ?? cid.ToString();
+                    return new[] { InlineKeyboardButton.WithCallbackData(name, $"attack_group:{cid}") };
+                }).ToArray();
                 sessions[uid] = new UserSession { Step = SessionStep.AttackWaitingGroup };
                 await SendPrompt(uid, uid, "📋 گروه:", new InlineKeyboardMarkup(kb), ct);
             }
@@ -4014,7 +5586,7 @@ partial class Program
         var parts = cb.Data.Split(':');
         if (parts.Length < 1) return;
 
-        if (parts[0] is "eq_details" or "faction" or "build_menu" or "upgrade" or "tank_info" or "tank_buy" or "plane_info" or "plane_buy" or "bomber_info" or "bomber_buy" or "aa_info" or "aa_buy" or "cancel")
+        if (parts[0] is "eq_details" or "dep_info" or "faction" or "build_menu" or "upgrade" or "tank_info" or "tank_buy" or "plane_info" or "plane_buy" or "bomber_info" or "bomber_buy" or "aa_info" or "aa_buy" or "boat_info" or "boat_buy" or "sub_info" or "sub_buy" or "battleship_info" or "battleship_buy" or "battleship_repair" or "battleship_repair_confirm" or "boat_refuel" or "boat_refuel_confirm" or "cancel")
         {
             if (parts.Length >= 2 && TryParseLong(parts[1], out long ownerBtn))
             {
@@ -4027,6 +5599,7 @@ partial class Program
             case "cancel": await HandleCancelCallback(cb, ct); break;
             case "faction": await HandleFactionCallback(cb, parts, ct); break;
             case "eq_details": await SendCountryEquipmentDetails(cb, parts, ct); break;
+            case "dep_info": await SendDeploymentInfoDetails(cb, parts, ct); break;
             case "build_menu": await HandleBuildMenuCallback(cb, parts, ct); break;
             case "upgrade": await HandleUpgradeCallback(cb, parts, ct); break;
             case "timing": await HandleTimingCallback(cb, parts, ct); break;
@@ -4043,14 +5616,28 @@ partial class Program
             case "defense_tactic_select": await HandleDefenseTacticSelectCallback(cb, parts, ct); break;
             case "defense_set": await HandleDefenseSetCallback(cb, parts, ct); break;
             case "defense_pct": await HandleDefensePctCallback(cb, parts, ct); break;
+            case "defense_model_pct": await HandleDefenseModelPctCallback(cb, parts, ct); break;
+            case "boat_info": await HandleBoatInfoCallback(cb, parts, ct); break;
+            case "boat_buy": await HandleBoatBuyCallback(cb, parts, ct); break;
+            case "sub_info": await HandleSubInfoCallback(cb, parts, ct); break;
+            case "sub_buy": await HandleSubBuyCallback(cb, parts, ct); break;
+            case "battleship_info": await HandleBattleshipInfoCallback(cb, parts, ct); break;
+            case "battleship_buy": await HandleBattleshipBuyCallback(cb, parts, ct); break;
+            case "battleship_repair": await HandleBattleshipRepairCallback(cb, parts, ct); break;
+            case "battleship_repair_confirm": await HandleBattleshipRepairConfirmCallback(cb, parts, ct); break;
+            case "boat_refuel": await HandleBoatRefuelCallback(cb, parts, ct); break;
+            case "boat_refuel_confirm": await HandleBoatRefuelConfirmCallback(cb, parts, ct); break;
             case "airdef_strategy": await HandleAirDefStrategyCallback(cb, parts, ct); break;
             case "airdef_tactic": await HandleAirDefTacticCallback(cb, parts, ct); break;
             case "attack_group": await HandleAttackGroupCallback(cb, parts, ct); break;
             case "attack_target": await HandleAttackTargetCallback(cb, parts, ct); break;
+            case "attack_type": await HandleAttackTypeCallback(cb, parts, ct); break;
             case "attack_strategy": await HandleAttackStrategyCallback(cb, parts, ct); break;
             case "attack_tactic": await HandleAttackTacticCallback(cb, parts, ct); break;
             case "attack_air_strategy": await HandleAttackAirStrategyCallback(cb, parts, ct); break;
             case "attack_air_tactic": await HandleAttackAirTacticCallback(cb, parts, ct); break;
+            case "attack_naval_strategy": await HandleAttackNavalStrategyCallback(cb, parts, ct); break;
+            case "attack_naval_tactic": await HandleAttackNavalTacticCallback(cb, parts, ct); break;
         }
     }
 
@@ -4493,7 +6080,7 @@ partial class Program
         await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
         if (info == "تانک ناشناخته") { await SendTemp(cb.Message.Chat.Id, info, ct: ct); return; }
         var kb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("1", $"tank_buy:{uid}:{tid}:1"), InlineKeyboardButton.WithCallbackData("5", $"tank_buy:{uid}:{tid}:5") }, new[] { InlineKeyboardButton.WithCallbackData("10", $"tank_buy:{uid}:{tid}:10"), InlineKeyboardButton.WithCallbackData("25", $"tank_buy:{uid}:{tid}:25") }, new[] { InlineKeyboardButton.WithCallbackData("❌ انصراف", $"cancel:{uid}") } });
-        await SendTemp(cb.Message.Chat.Id, info, markup: kb, ct: ct);
+        await SendTemp(uid, info, markup: kb, ct: ct);
     }
 
     static async Task HandleTankBuyCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
@@ -4514,7 +6101,7 @@ partial class Program
         c.Iron -= ti; c.Tanks += cnt; c.Money -= tm;
         Database.UpdateCountryResources(uid, cid, c.Money, c.Iron, c.Tanks);
         string tn = tid switch { "M2Medium" => "M2 Medium", "T28" => "T-28", "PanzerIII" => "Panzer III", _ => tid };
-        await SendTemp(cid, $"✅ {cnt} تانک {tn} خریداری شد!\n💰 پول: {(c.Money / 1000.0):F1}K\n🔩 آهن: {(c.Iron / 1000.0):F1}K", ct: ct);
+        await SendTemp(uid, $"✅ {cnt} تانک {tn} خریداری شد!\n💰 پول: {(c.Money / 1000.0):F1}K\n🔩 آهن: {(c.Iron / 1000.0):F1}K", ct: ct);
         await bot.AnswerCallbackQueryAsync(cb.Id, "✅ خرید موفق", cancellationToken: ct);
     }
 
@@ -4532,7 +6119,7 @@ partial class Program
         };
         await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
         var kb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("1", $"plane_buy:{uid}:{pid}:1"), InlineKeyboardButton.WithCallbackData("5", $"plane_buy:{uid}:{pid}:5") }, new[] { InlineKeyboardButton.WithCallbackData("10", $"plane_buy:{uid}:{pid}:10"), InlineKeyboardButton.WithCallbackData("25", $"plane_buy:{uid}:{pid}:25") }, new[] { InlineKeyboardButton.WithCallbackData("❌ انصراف", $"cancel:{uid}") } });
-        await SendTemp(cb.Message.Chat.Id, info, markup: kb, ct: ct);
+        await SendTemp(uid, info, markup: kb, ct: ct);
     }
 
     static async Task HandlePlaneBuyCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
@@ -4553,7 +6140,7 @@ partial class Program
         c.Iron -= ti; c.Planes += cnt; c.Money -= tm;
         Database.UpdatePlanesResources(uid, cid, c.Money, c.Iron, c.Planes);
         string pn = pid switch { "I16" => "I-16", "P36" => "P-36", "Bf109" => "Bf 109", _ => pid };
-        await SendTemp(cid, $"✅ {cnt} {pn} خریداری شد!", ct: ct);
+        await SendTemp(uid, $"✅ {cnt} {pn} خریداری شد!", ct: ct);
         await bot.AnswerCallbackQueryAsync(cb.Id, "✅", cancellationToken: ct);
     }
 
@@ -4571,7 +6158,7 @@ partial class Program
         };
         await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
         var kb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("1", $"bomber_buy:{uid}:{bid}:1"), InlineKeyboardButton.WithCallbackData("2", $"bomber_buy:{uid}:{bid}:2") }, new[] { InlineKeyboardButton.WithCallbackData("5", $"bomber_buy:{uid}:{bid}:5"), InlineKeyboardButton.WithCallbackData("10", $"bomber_buy:{uid}:{bid}:10") }, new[] { InlineKeyboardButton.WithCallbackData("❌ انصراف", $"cancel:{uid}") } });
-        await SendTemp(cb.Message.Chat.Id, info, markup: kb, ct: ct);
+        await SendTemp(uid, info, markup: kb, ct: ct);
     }
 
     static async Task HandleBomberBuyCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
@@ -4592,7 +6179,7 @@ partial class Program
         c.Iron -= ti; c.Bombers += cnt; c.Money -= tm;
         Database.UpdateBombersResources(uid, cid, c.Money, c.Iron, c.Bombers);
         string bn = bid switch { "DB3" => "DB-3", "He111" => "He 111", "B17" => "B-17", _ => bid };
-        await SendTemp(cid, $"✅ {cnt} {bn} خریداری شد!", ct: ct);
+        await SendTemp(uid, $"✅ {cnt} {bn} خریداری شد!", ct: ct);
         await bot.AnswerCallbackQueryAsync(cb.Id, "✅", cancellationToken: ct);
     }
 
@@ -4604,7 +6191,7 @@ partial class Program
         await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
         // FIX(1): همهٔ callbackها aa_buy (قبلاً یکی اشتباه aabuy بود)
         var kb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("1", $"aa_buy:{uid}:AA76:1"), InlineKeyboardButton.WithCallbackData("5", $"aa_buy:{uid}:AA76:5") }, new[] { InlineKeyboardButton.WithCallbackData("10", $"aa_buy:{uid}:AA76:10"), InlineKeyboardButton.WithCallbackData("25", $"aa_buy:{uid}:AA76:25") }, new[] { InlineKeyboardButton.WithCallbackData("❌ انصراف", $"cancel:{uid}") } });
-        await SendTemp(cb.Message.Chat.Id, info, markup: kb, ct: ct);
+        await SendTemp(uid, info, markup: kb, ct: ct);
     }
 
     static async Task HandleAntiAirBuyCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
@@ -4621,8 +6208,251 @@ partial class Program
         if (c.Money < tm) { await bot.AnswerCallbackQueryAsync(cb.Id, $"❌ پول", cancellationToken: ct); return; }
         c.Iron -= ti; c.AntiAir += cnt; c.Money -= tm;
         Database.UpdateAntiAirResources(uid, cid, c.Money, c.Iron, c.AntiAir);
-        await SendTemp(cid, $"✅ {cnt} پدافند خریداری شد!", ct: ct);
+        await SendTemp(uid, $"✅ {cnt} پدافند خریداری شد!", ct: ct);
         await bot.AnswerCallbackQueryAsync(cb.Id, "✅", cancellationToken: ct);
+    }
+
+    // ================= NAVAL SHOP –  =================
+    static async Task HandleBoatInfoCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length != 3 || cb.Message == null) return;
+        long uid = cb.From.Id;
+        string bid = parts[2];
+        string info = bid switch
+        {
+            "SBoot" => "🇩🇪 S-Boot (E-Boat)\n⚡ سرعت: 38–41 گره (70–76 km/h)\n🛡 زره: تقریباً هیچ (بدنه فولادی سبک)\n👥 خدمه: 21–24 نفر\n🔫 تسلیحات: 2x لوله اژدر 533mm، 1x توپ 20mm، چند مسلسل 7.92mm\n💰 هر 5 عدد: 2K پول + 1K آهن",
+            "PTBoat" => "🇺🇸 PT Boat\n⚡ سرعت: 40–45 گره (74–83 km/h)\n🛡 زره: هیچ\n👥 خدمه: 10–14 نفر\n🔫 تسلیحات: 2–4 اژدر، مسلسل 12.7mm، گاهی توپ 20mm\n💰 هر 5 عدد: 3K پول + 1.5K آهن",
+            "G5" => "🇷🇺 G-5\n⚡ سرعت: 50–53 گره (93–98 km/h)\n🛡 زره: هیچ\n👥 خدمه: 6 نفر\n🔫 تسلیحات: 2x اژدر 533mm، 2x مسلسل 7.62mm\n💰 هر 5 عدد: 2.5K پول + 1.5K آهن",
+            _ => "قایق ناشناخته"
+        };
+        await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("5", $"boat_buy:{uid}:{bid}:5"), InlineKeyboardButton.WithCallbackData("10", $"boat_buy:{uid}:{bid}:10") },
+            new[] { InlineKeyboardButton.WithCallbackData("25", $"boat_buy:{uid}:{bid}:25"), InlineKeyboardButton.WithCallbackData("❌ انصراف", $"cancel:{uid}") }
+        });
+        await SendTemp(uid, info, markup: kb, ct: ct);
+    }
+
+    static async Task HandleBoatBuyCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length != 4 || cb.Message == null) return;
+        long uid = cb.From.Id;
+        string bid = parts[2];
+        if (!TryParseInt(parts[3], out int cnt) || cnt <= 0) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ تعداد", cancellationToken: ct); return; }
+        long cid = cb.Message.Chat.Id;
+        var c = Database.GetCountry(uid, cid);
+        if (c == null) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور", cancellationToken: ct); return; }
+
+        // Price per 5
+        double moneyPer5 = bid switch { "SBoot" => 2000, "PTBoat" => 3000, "G5" => 2500, _ => 0 };
+        double ironPer5 = bid switch { "SBoot" => 1000, "PTBoat" => 1500, "G5" => 1500, _ => 0 };
+        long tm = (long)Math.Ceiling(cnt / 5.0 * moneyPer5);
+        long ti = (long)Math.Ceiling(cnt / 5.0 * ironPer5);
+
+        if (c.Money < tm) { await bot.AnswerCallbackQueryAsync(cb.Id, $"❌ پول کم: نیاز {tm}", cancellationToken: ct); return; }
+        if (c.Iron < ti) { await bot.AnswerCallbackQueryAsync(cb.Id, $"❌ آهن کم: نیاز {ti}", cancellationToken: ct); return; }
+
+        c.Money -= tm; c.Iron -= ti; c.Boats += cnt;
+        Database.UpdateCountryFull(c);
+        string modelName = bid switch { "SBoot" => "S-Boot", "PTBoat" => "PT Boat", "G5" => "G-5", _ => bid };
+        Database.AddEquipmentModel(uid, cid, "Boats", modelName, cnt);
+
+        await SendTemp(uid, $"✅ {cnt} قایق {modelName} خریداری شد!\n💰 باقی‌مانده: {(c.Money / 1000.0):F1}K | 🔩 آهن: {(c.Iron / 1000.0):F1}K", ct: ct);
+        await bot.AnswerCallbackQueryAsync(cb.Id, "✅ خرید موفق", cancellationToken: ct);
+    }
+
+    static async Task HandleSubInfoCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length != 3 || cb.Message == null) return;
+        long uid = cb.From.Id;
+        string sid = parts[2];
+        string info = sid switch
+        {
+            "VIIC" => "🇩🇪 Type VIIC U-boat\n⚡ سرعت: 17.7 گره روی آب / 7.6 گره زیر آب\n🛡 زره: ندارد (بدنه فشاری 18–22mm فولاد)\n👥 خدمه: 44–52 نفر\n🔫 تسلیحات: 5x لوله اژدر 533mm، 11–14 اژدر، 1x توپ 88mm، 1x توپ 20mm ضدهوایی\n💰 هر 1 عدد: 10K پول + 5K آهن",
+            "Gato" => "🇺🇸 Gato\n⚡ سرعت: 21 گره روی آب / 9 گره زیر آب\n🛡 زره: ندارد (بدنه فشاری فولادی)\n👥 خدمه: 55–60 نفر\n🔫 تسلیحات: 8x لوله اژدر 533mm، 24 اژدر، 1x توپ 76mm، مسلسل ضدهوایی\n💰 هر 1 عدد: 10K پول + 5K آهن",
+            "SClass" => "🇷🇺 S-class, Series IX\n⚡ سرعت: 13–14 گره روی آب / 7–8 گره زیر آب\n🛡 زره: ندارد (بدنه فشاری فولادی)\n👥 خدمه: 37–44 نفر\n🔫 تسلیحات: 6x لوله اژدر 533mm، 10 اژدر، 1x توپ 45mm، مسلسل ضدهوایی\n💰 هر 1 عدد: 8K پول + 4K آهن",
+            _ => "زیردریایی ناشناخته"
+        };
+        await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("1", $"sub_buy:{uid}:{sid}:1"), InlineKeyboardButton.WithCallbackData("2", $"sub_buy:{uid}:{sid}:2") },
+            new[] { InlineKeyboardButton.WithCallbackData("5", $"sub_buy:{uid}:{sid}:5"), InlineKeyboardButton.WithCallbackData("❌ انصراف", $"cancel:{uid}") }
+        });
+        await SendTemp(uid, info, markup: kb, ct: ct);
+    }
+
+    static async Task HandleSubBuyCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length != 4 || cb.Message == null) return;
+        long uid = cb.From.Id;
+        string sid = parts[2];
+        if (!TryParseInt(parts[3], out int cnt) || cnt <= 0) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ تعداد", cancellationToken: ct); return; }
+        long cid = cb.Message.Chat.Id;
+        var c = Database.GetCountry(uid, cid);
+        if (c == null) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور", cancellationToken: ct); return; }
+
+        double moneyPer1 = sid switch { "VIIC" => 10000, "Gato" => 10000, "SClass" => 8000, _ => 0 };
+        double ironPer1 = sid switch { "VIIC" => 5000, "Gato" => 5000, "SClass" => 4000, _ => 0 };
+        long tm = (long)(cnt * moneyPer1);
+        long ti = (long)(cnt * ironPer1);
+
+        if (c.Money < tm) { await bot.AnswerCallbackQueryAsync(cb.Id, $"❌ پول کم", cancellationToken: ct); return; }
+        if (c.Iron < ti) { await bot.AnswerCallbackQueryAsync(cb.Id, $"❌ آهن کم", cancellationToken: ct); return; }
+
+        c.Money -= tm; c.Iron -= ti; c.Submarines += cnt;
+        Database.UpdateCountryFull(c);
+        string modelName = sid switch { "VIIC" => "Type VIIC", "Gato" => "Gato", "SClass" => "S-class", _ => sid };
+        Database.AddEquipmentModel(uid, cid, "Submarines", modelName, cnt);
+
+        await SendTemp(uid, $"✅ {cnt} زیردریایی {modelName} خریداری شد!", ct: ct);
+        await bot.AnswerCallbackQueryAsync(cb.Id, "✅", cancellationToken: ct);
+    }
+
+    static async Task HandleBattleshipInfoCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length != 3 || cb.Message == null) return;
+        long uid = cb.From.Id;
+        string bid = parts[2];
+        string info = bid switch
+        {
+            "Bismarck" => "🇩🇪 Bismarck\n⚓ تعداد ساخته شده: 2\n⚡ سرعت: 30 گره (56 km/h)\n👥 خدمه: 2,092 نفر\n🛡 زره: کمربند اصلی 320mm، عرشه 100–120mm، برجک‌ها 360mm، برج فرماندهی 350mm\n🔫 تسلیحات: 8x 380mm (4 برجک دوتایی)، 12x 150mm، 16x 105mm ضدهوایی، 16x 37mm ضدهوایی، 12x 20mm ضدهوایی، 4x Arado Ar 196 شناسایی\n💰 هر 1: 50K پول + 30K آهن\n⚠️ نیاز بندر سطح 4، حداکثر 3 عدد",
+            "Iowa" => "🇺🇸 Iowa\n⚡ سرعت: 28 گره (52 km/h)\n👥 خدمه: 1,800 نفر\n🛡 زره: کمربند اصلی 305mm، عرشه 140mm، برجک‌ها 406mm، برج فرماندهی 373mm\n🔫 تسلیحات: 9x 406mm (3 برجک سه‌تایی)، 20x 127mm دو منظوره، 16x 28mm ضدهوایی، 18x 12.7mm مسلسل، 3x Vought OS2U Kingfisher شناسایی\n💰 هر 1: 50K پول + 40K آهن\n⚠️ نیاز بندر سطح 4، حداکثر 3 عدد",
+            "Soyuz" => "🇷🇺 Sovetsky Soyuz\n⚓ تعداد ساخته شده: 4\n⚡ سرعت: 23 گره (43 km/h)\n👥 خدمه: 1,220 نفر\n🛡 زره: کمربند اصلی 225mm، عرشه 50–75mm، برجک‌ها 203mm، برج فرماندهی 254mm\n🔫 تسلیحات: 12x 305mm (4 برجک سه‌تایی)، 16x 120mm، 6x 76.2mm ضدهوایی، 6x 37mm ضدهوایی، 12x 12.7mm مسلسل\n💰 هر 1: 45K پول + 25K آهن\n⚠️ نیاز بندر سطح 4، حداکثر 3 عدد",
+            _ => "نبردناو ناشناخته"
+        };
+        await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("1", $"battleship_buy:{uid}:{bid}:1") },
+            new[] { InlineKeyboardButton.WithCallbackData("❌ انصراف", $"cancel:{uid}") }
+        });
+        await SendTemp(uid, info, markup: kb, ct: ct);
+    }
+
+    static async Task HandleBattleshipBuyCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length != 4 || cb.Message == null) return;
+        long uid = cb.From.Id;
+        string bid = parts[2];
+        if (!TryParseInt(parts[3], out int cnt) || cnt != 1) cnt = 1; // battleship only 1 at a time
+        long cid = cb.Message.Chat.Id;
+        var c = Database.GetCountry(uid, cid);
+        if (c == null) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور", cancellationToken: ct); return; }
+
+        if (c.PortLevel < 4)
+        {
+            await bot.AnswerCallbackQueryAsync(cb.Id, "⚓ برای ساخت نبردناو بندر سطح ۴ لازم است", showAlert: true, cancellationToken: ct);
+            return;
+        }
+        if (c.Battleships >= 3)
+        {
+            await bot.AnswerCallbackQueryAsync(cb.Id, "❌ حداکثر 3 نبردناو می‌توانید داشته باشید", showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        double moneyPer1 = bid switch { "Bismarck" => 50000, "Iowa" => 50000, "Soyuz" => 45000, _ => 0 };
+        double ironPer1 = bid switch { "Bismarck" => 30000, "Iowa" => 40000, "Soyuz" => 25000, _ => 0 };
+        long tm = (long)moneyPer1;
+        long ti = (long)ironPer1;
+
+        if (c.Money < tm) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ پول کم", cancellationToken: ct); return; }
+        if (c.Iron < ti) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ آهن کم", cancellationToken: ct); return; }
+
+        c.Money -= tm; c.Iron -= ti; c.Battleships += 1;
+        Database.UpdateCountryFull(c);
+        string modelName = bid switch { "Bismarck" => "Bismarck", "Iowa" => "Iowa", "Soyuz" => "Sovetsky Soyuz", _ => bid };
+        Database.AddEquipmentModel(uid, cid, "Battleships", modelName, 1);
+
+        await SendTemp(uid, $"✅ 1 نبردناو {modelName} خریداری شد! (مجموع: {c.Battleships}/3)", ct: ct);
+        await bot.AnswerCallbackQueryAsync(cb.Id, "✅", cancellationToken: ct);
+    }
+
+    static async Task HandleBattleshipRepairCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length < 2 || cb.Message == null) return;
+        long uid = cb.From.Id;
+        long cid = cb.Message.Chat.Id;
+        var c = Database.GetCountry(uid, cid);
+        if (c == null) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور یافت نشد", showAlert: true, cancellationToken: ct); return; }
+        if (c.Battleships == 0) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ نبردناوی ندارید", showAlert: true, cancellationToken: ct); return; }
+        if (c.BattleshipDamage <= 0) { await bot.AnswerCallbackQueryAsync(cb.Id, "✅ آسیبی نیست", showAlert: true, cancellationToken: ct); return; }
+        long totalCount = c.Battleships;
+        long moneyPer = c.Faction == Faction.USA ? 50000 : c.Faction == Faction.USSR ? 45000 : 50000;
+        long ironPer = c.Faction == Faction.USA ? 40000 : c.Faction == Faction.USSR ? 25000 : 30000;
+        long totalMoney = moneyPer * totalCount;
+        long totalIron = ironPer * totalCount;
+        double frac = c.BattleshipDamage / (double)(totalCount * 100);
+        long needMoney = (long)(totalMoney * 0.6 * frac);
+        long needIron = (long)(totalIron * 0.6 * frac);
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData($"✅ تعمیر ({needMoney/1000}K پول، {needIron/1000}K آهن)", $"battleship_repair_confirm:{uid}:{needMoney}:{needIron}") },
+            new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", $"cancel:{uid}") }
+        });
+        await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
+        await SendTemp(uid, $"🔧 تعمیر ناو\n🚢 تعداد: {c.Battleships}\n💥 آسیب: {c.BattleshipDamage}%\n💰 هزینه: {needMoney:N0} پول + {needIron:N0} آهن", markup: kb, ct: ct);
+    }
+
+    static async Task HandleBattleshipRepairConfirmCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length < 4 || cb.Message == null) return;
+        long uid = cb.From.Id;
+        if (!TryParseLong(parts[2], out long needMoney) || !TryParseLong(parts[3], out long needIron)) return;
+        long cid = cb.Message.Chat.Id;
+        var c = Database.GetCountry(uid, cid);
+        if (c == null) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور یافت نشد", showAlert: true, cancellationToken: ct); return; }
+        if (c.BattleshipDamage <= 0) { await bot.AnswerCallbackQueryAsync(cb.Id, "✅ نیازی نیست", showAlert: true, cancellationToken: ct); return; }
+        if (c.Money < needMoney) { await bot.AnswerCallbackQueryAsync(cb.Id, $"❌ پول کم: نیاز {needMoney:N0}", showAlert: true, cancellationToken: ct); return; }
+        if (c.Iron < needIron) { await bot.AnswerCallbackQueryAsync(cb.Id, $"❌ آهن کم: نیاز {needIron:N0}", showAlert: true, cancellationToken: ct); return; }
+        c.Money -= needMoney;
+        c.Iron -= needIron;
+        c.BattleshipDamage = 0;
+        Database.UpdateCountryFull(c);
+        await bot.AnswerCallbackQueryAsync(cb.Id, "✅ تعمیر شد!", cancellationToken: ct);
+        await SendTemp(uid, $"✅ نبردناوهای شما به طور کامل تعمیر شد!\n💰 هزینه: {needMoney:N0} پول + {needIron:N0} آهن\n🚢 آماده نبرد!", ct: ct);
+        if (cb.Message != null) DeleteNow(cb.Message.Chat.Id, cb.Message.MessageId);
+    }
+
+    static async Task HandleBoatRefuelCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length < 2 || cb.Message == null) return;
+        long uid = cb.From.Id;
+        long cid = cb.Message.Chat.Id;
+        var c = Database.GetCountry(uid, cid);
+        if (c == null) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور یافت نشد", showAlert: true, cancellationToken: ct); return; }
+        if (c.Boats == 0) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ قایقی ندارید", showAlert: true, cancellationToken: ct); return; }
+        if (c.BoatsFuel >= 100) { await bot.AnswerCallbackQueryAsync(cb.Id, "✅ سوخت کامل است", showAlert: true, cancellationToken: ct); return; }
+        int missing = 100 - c.BoatsFuel;
+        long needIron = c.Boats * missing / 2;
+        if (needIron <= 0) needIron = c.Boats;
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData($"⛽ سوخت‌گیری ({needIron:N0} آهن)", $"boat_refuel_confirm:{uid}:{needIron}") },
+            new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", $"cancel:{uid}") }
+        });
+        await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
+        await SendTemp(cid, $"⛽ سوخت قایق‌ها: {c.BoatsFuel}%\n🚤 تعداد: {c.Boats}\n🔧 نیاز: {missing}% → {needIron:N0} آهن", markup: kb, ct: ct);
+    }
+
+    static async Task HandleBoatRefuelConfirmCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length < 3 || cb.Message == null) return;
+        long uid = cb.From.Id;
+        if (!TryParseLong(parts[2], out long needIron)) return;
+        long cid = cb.Message.Chat.Id;
+        var c = Database.GetCountry(uid, cid);
+        if (c == null) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور یافت نشد", showAlert: true, cancellationToken: ct); return; }
+        if (c.Iron < needIron) { await bot.AnswerCallbackQueryAsync(cb.Id, $"❌ آهن کم: نیاز {needIron:N0}", showAlert: true, cancellationToken: ct); return; }
+        c.Iron -= needIron;
+        c.BoatsFuel = 100;
+        c.SubmarinesFuel = Math.Max(c.SubmarinesFuel, 100);
+        Database.SetBoatFuelPct(uid, cid, 100);
+        Database.UpdateCountryFull(c);
+        await bot.AnswerCallbackQueryAsync(cb.Id, "✅ سوخت‌گیری شد!", cancellationToken: ct);
+        await SendTemp(uid, $"✅ قایق‌های شما سوخت‌گیری شد!\n⛽ سوخت: 100%\n💰 هزینه: {needIron:N0} آهن\n🌊 آماده اعزام!", ct: ct);
+        if (cb.Message != null) DeleteNow(cb.Message.Chat.Id, cb.Message.MessageId);
     }
 
     // ============================================================
@@ -4691,8 +6521,10 @@ partial class Program
                 catch (Exception ex) { Console.WriteLine($"[TRANSFER TIMER ERR] {ex.Message}"); }
                 try { await ProcessActiveDeployments(CancellationToken.None); }
                 catch (Exception ex) { Console.WriteLine($"[DEPLOY TIMER ERR] {ex.Message}"); }
+                try { await ProcessNavalInvasions(CancellationToken.None); }
+                catch (Exception ex) { Console.WriteLine($"[NAVAL TIMER ERR] {ex.Message}"); }
             }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(60));
-            Console.WriteLine("[TIMER] transfer/deployment timer started (every 60s)");
+            Console.WriteLine("[TIMER] transfer/deployment/naval timer started (every 60s)");
         }
         catch (Exception ex)
         {
@@ -4814,8 +6646,14 @@ partial class Program
             if (GetTransferCount(cid, uid) >= MAX_TRANSFERS_PER_UPDATE && !Database.HasGroupLockExemption(cid)) { await bot.AnswerCallbackQueryAsync(cb.Id, $"⛔ سهمیه تمام شد.", showAlert: true, cancellationToken: ct); return; }
             sessions[uid] = new UserSession { Step = SessionStep.TransferWaitingResource, TransferChatId = cid, TransferAllianceId = aid };
             await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
-            var kb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("💰 پول", $"tf_res:{cid}:money"), InlineKeyboardButton.WithCallbackData("🔩 آهن", $"tf_res:{cid}:iron") }, new[] { InlineKeyboardButton.WithCallbackData("🪖 سرباز", $"tf_res:{cid}:soldiers"), InlineKeyboardButton.WithCallbackData("🛡 تانک", $"tf_res:{cid}:tanks") }, new[] { InlineKeyboardButton.WithCallbackData("✈️ جنگنده", $"tf_res:{cid}:planes"), InlineKeyboardButton.WithCallbackData("🛩 بمب‌افکن", $"tf_res:{cid}:bombers") } });
-            if (cb.Message != null) await bot.EditMessageTextAsync(uid, cb.Message.MessageId, "📦 نوع منبع:", replyMarkup: kb, cancellationToken: ct);
+            var kb = new InlineKeyboardMarkup(new[] {
+                new[] { InlineKeyboardButton.WithCallbackData("💰 پول", $"tf_res:{cid}:money"), InlineKeyboardButton.WithCallbackData("🔩 آهن", $"tf_res:{cid}:iron") },
+                new[] { InlineKeyboardButton.WithCallbackData("🪖 سرباز", $"tf_res:{cid}:soldiers"), InlineKeyboardButton.WithCallbackData("🛡 تانک", $"tf_res:{cid}:tanks") },
+                new[] { InlineKeyboardButton.WithCallbackData("✈️ جنگنده", $"tf_res:{cid}:planes"), InlineKeyboardButton.WithCallbackData("🛩 بمب‌افکن", $"tf_res:{cid}:bombers") },
+                new[] { InlineKeyboardButton.WithCallbackData("🚤 قایق", $"tf_res:{cid}:boats"), InlineKeyboardButton.WithCallbackData("⚓ زیردریایی", $"tf_res:{cid}:submarines") },
+                new[] { InlineKeyboardButton.WithCallbackData("🚢 نبردناو", $"tf_res:{cid}:battleships") }
+            });
+            if (cb.Message != null) await bot.EditMessageTextAsync(uid, cb.Message.MessageId, "📦 نوع منبع (شامل نیروی دریایی):", replyMarkup: kb, cancellationToken: ct);
             return;
         }
 
@@ -4826,10 +6664,10 @@ partial class Program
             long aid = Database.GetUserAllianceId(cid, uid);
             if (aid == 0) return;
             var mems = Database.GetAllianceMembers(aid).Where(m => m != uid).ToList();
-            var kbList = mems.Select(m => { var c = Database.GetCountry(m, cid); return new[] { InlineKeyboardButton.WithCallbackData($"👑 {(c?.OwnerName ?? $"کاربر {m}")} ({c?.Name})", $"tf_target:{cid}:{res}:{m}") }; }).ToArray();
+            var kbList = mems.Select(m => { var c = Database.GetCountry(m, cid); return new[] { InlineKeyboardButton.WithCallbackData($"👑 {(c?.OwnerName ?? $"کاربر {m}")} ({c?.Name}) – 🚢{c?.Battleships ?? 0}/3", $"tf_target:{cid}:{res}:{m}") }; }).ToArray();
             sessions[uid] = new UserSession { Step = SessionStep.TransferWaitingTarget, TransferChatId = cid, TransferAllianceId = aid, TransferResourceType = res };
             await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
-            if (cb.Message != null) await bot.EditMessageTextAsync(uid, cb.Message.MessageId, "🎯 مقصد:", replyMarkup: new InlineKeyboardMarkup(kbList), cancellationToken: ct);
+            if (cb.Message != null) await bot.EditMessageTextAsync(uid, cb.Message.MessageId, $"🎯 مقصد برای {res}:\n⚠️ نبردناو: حداکثر 3 عدد", replyMarkup: new InlineKeyboardMarkup(kbList), cancellationToken: ct);
             return;
         }
 
@@ -4840,6 +6678,16 @@ partial class Program
             long aid = Database.GetUserAllianceId(cid, uid);
             if (aid == 0) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ عضو اتحاد نیستید.", showAlert: true, cancellationToken: ct); return; }
             if (Database.GetUserAllianceId(cid, tgtId) != aid) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ هم‌اتحاد نیست.", showAlert: true, cancellationToken: ct); return; }
+            // Battleship cap check at target selection
+            if (res == "battleships")
+            {
+                var recv = Database.GetCountry(tgtId, cid);
+                if (recv != null && recv.Battleships >= 3)
+                {
+                    await bot.AnswerCallbackQueryAsync(cb.Id, "⛔ نمیتوانید به این کشور نبردناو ترنسفر کنید، تعداد نبرد ناو: 3", showAlert: true, cancellationToken: ct);
+                    return;
+                }
+            }
             var sess = sessions.GetOrAdd(uid, _ => new UserSession());
             sess.Step = SessionStep.TransferWaitingDuration; sess.TransferChatId = cid; sess.TransferAllianceId = aid; sess.TransferResourceType = res; sess.TransferTargetId = tgtId;
             await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
@@ -4853,13 +6701,47 @@ partial class Program
             if (parts.Length < 2 || !TryParseInt(parts[1], out int min)) return;
             if (!sessions.TryGetValue(uid, out var sess) || sess == null) return;
             sess.TransferDurationMin = min;
-            sess.Step = SessionStep.TransferWaitingAmount;
             var c = Database.GetCountry(uid, sess.TransferChatId);
-            long avail = 0;
-            if (c != null) avail = sess.TransferResourceType switch { "money" => c.Money, "iron" => c.Iron, "soldiers" => c.Soldiers, "tanks" => c.Tanks, "planes" => c.Planes, _ => c.Bombers };
+            if (c == null) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور یافت نشد.", showAlert: true, cancellationToken: ct); return; }
+
+            var breakdown = GetTransferBreakdown(c, sess.TransferResourceType);
+            if (breakdown.Count == 0)
+            {
+                await bot.AnswerCallbackQueryAsync(cb.Id, "❌ موجودی ندارید.", showAlert: true, cancellationToken: ct);
+                return;
+            }
+
+            // Prepare session lists for per-model transfer
+            sess.TransferModelNames = breakdown.Select(b => b.ModelName).ToList();
+            sess.TransferModelCounts = breakdown.Select(b => b.Count).ToList();
+            sess.TransferModelAmounts = new List<long>(new long[breakdown.Count]);
+            sess.TransferModelIndex = 0;
+
             string rn = GetResName(sess.TransferResourceType);
+
             await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
-            if (cb.Message != null) await bot.EditMessageTextAsync(uid, cb.Message.MessageId, $"🔢 مقدار:\n📦 {rn}\n📊 موجودی: {avail:N0}", cancellationToken: ct);
+
+            if (breakdown.Count == 1)
+            {
+                // Single model – simple Persian prompt
+                sess.Step = SessionStep.TransferWaitingAmount;
+                string modelInfo = string.IsNullOrWhiteSpace(breakdown[0].ModelName) ? "" : $"\n🔧 مدل: {breakdown[0].ModelName}";
+                if (cb.Message != null)
+                    await bot.EditMessageTextAsync(uid, cb.Message.MessageId,
+                        $"🔢 مقدار انتقال را وارد کنید:{modelInfo}\n📦 {rn}\n📊 موجودی: {breakdown[0].Count:N0}\n\n✍️ عدد را به فارسی یا انگلیسی بنویسید. 0 برای لغو.",
+                        cancellationToken: ct);
+            }
+            else
+            {
+                // Multiple models – ask per model in Persian
+                sess.Step = SessionStep.TransferWaitingModelAmount;
+                var cur = breakdown[0];
+                string modelInfo = string.IsNullOrWhiteSpace(cur.ModelName) ? rn : cur.ModelName;
+                if (cb.Message != null)
+                    await bot.EditMessageTextAsync(uid, cb.Message.MessageId,
+                        $"📦 انتقال {rn} – چند نوع دارید ({breakdown.Count} مدل)\n\n🔧 مدل {1}/{breakdown.Count}: {modelInfo}\n📊 موجودی این مدل: {cur.Count:N0}\n\nچند عدد از این مدل ارسال شود؟ (0 برای رد شدن)\n✍️ عدد را وارد کنید:",
+                        cancellationToken: ct);
+            }
             return;
         }
     }
@@ -4878,8 +6760,7 @@ partial class Program
             bool isOff = parts[2] == "Offensive";
             long aid = Database.GetUserAllianceId(cid, uid);
             if (aid == 0) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ عضو اتحاد نیستید.", showAlert: true, cancellationToken: ct); return; }
-            var mems = Database.GetAllianceMembers(aid);
-            var tgts = isOff ? Database.GetCountriesByChatId(cid).Where(c => !mems.Contains(c.OwnerId)).ToList() : mems.Select(m => Database.GetCountry(m, cid)).Where(c => c != null).ToList()!;
+            var tgts = isOff ? Database.GetAttackableTargets(cid, uid) : Database.GetAllianceMembers(aid).Select(m => Database.GetCountry(m, cid)).Where(c => c != null).ToList()!;
             if (tgts.Count == 0) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ هدفی نیست.", showAlert: true, cancellationToken: ct); return; }
             var tkb = tgts.Select(t => new[] { InlineKeyboardButton.WithCallbackData($"🏳️ {t!.Name} ({t.OwnerName})", $"dep_target:{cid}:{aid}:{(isOff ? "Off" : "Def")}:{t.OwnerId}") }).ToArray();
             await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
@@ -4907,10 +6788,11 @@ partial class Program
             if (parts.Length < 2 || !TryParseInt(parts[1], out int dur)) return;
             if (!sessions.TryGetValue(uid, out var sess) || sess == null) return;
             sess.DeployDuration = dur;
-            sess.Step = SessionStep.DeployWaitingFormation;
+            sess.DeployFormation = "Unified"; //  – removed MultiFront mode
+            sess.Step = SessionStep.DeployWaitingStrategy;
             await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
-            var formKb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("🤝 یکپارچه", $"dep_form:Unified") }, new[] { InlineKeyboardButton.WithCallbackData("🔀 چند جبهه‌ای", $"dep_form:MultiFront") } });
-            if (cb.Message != null) await bot.EditMessageTextAsync(uid, cb.Message.MessageId, "🧩 نوع آرایش:", replyMarkup: formKb, cancellationToken: ct);
+            var sk = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("⚔️ هجوم سریع", $"dep_strat:1") }, new[] { InlineKeyboardButton.WithCallbackData("🛡 ضدحمله", $"dep_strat:2") } });
+            if (cb.Message != null) await bot.EditMessageTextAsync(uid, cb.Message.MessageId, "🎯 استراتژی:", replyMarkup: sk, cancellationToken: ct);
             return;
         }
 
@@ -5042,20 +6924,253 @@ partial class Program
         string status = c.Besieged switch { 2 => "🆘 بحرانی", 1 => "⚠️ تحت محاصره", _ => "🏛 باثبات" };
         long mp = CalcManpower(c);
         string crisis = c.Besieged >= 2 ? "🆘 بحرانی! (۵۰٪ درآمد، قفل سطح ۴-۵)\n\n" : "";
+        // Naval info for وضعیت کشور
+        string navalLine = $"🚤 قایق: {c.Boats} (سوخت {c.BoatsFuel}%{(c.BoatsAtSea>0 ? $", در دریا {c.BoatsAtSea}" : "")}) | ⚓ زیردریایی: {c.Submarines}{(c.SubmarinesAtSea>0 ? $" در دریا {c.SubmarinesAtSea}" : "")} | 🚢 نبردناو: {c.Battleships}/3{(c.BattleshipDamage>0 ? $" آسیب {c.BattleshipDamage}%" : "")}{(c.BattleshipsAtSea>0 ? $" در دریا {c.BattleshipsAtSea}" : "")}";
         string info = crisis + $"🏳️ کشور: {c.Name}\n👤 مالک: {c.OwnerName}\n{status}\n⚡ مان‌پاور: {mp / 1000.0:F1}K\n\n" +
             $"💰 پول: {(c.Money / 1000.0):F1}K\n🏭 ساختمان: +{bInc / 1000.0:F1}K\n🧾 مالیات: +{tInc / 1000.0:F1}K ({c.TaxRate}%)\n\n" +
             $"🔩 آهن: {(c.Iron / 1000.0):F1}K\n⛏️ معدن: +{iInc / 1000.0:F1}K\n\n" +
             $"👥 جمعیت: {(c.Population / 1000.0):F1}K\n📊 تولد: {birthRate * 100:F2}%\n🏙 شهرها: {c.Cities}\n\n" +
             $"🪖 سرباز: {(c.Soldiers / 1000.0):F1}K\n🎯 سربازگیری: {c.RecruitmentRate}\n🏥 رفاه: {c.Welfare:F1}% (هدف: {wTarget:F0}%)\n\n" +
-            $"🪖 تانک: {c.Tanks}\n✈️ جنگنده: {c.Planes}\n🛩 بمب‌افکن: {c.Bombers}\n🎯 پدافند: {c.AntiAir}\n\n" +
+            $"🪖 تانک: {c.Tanks}\n✈️ جنگنده: {c.Planes}\n🛩 بمب‌افکن: {c.Bombers}\n🎯 پدافند: {c.AntiAir}\n" +
+            $"{navalLine}\n\n" +
             $"🏭 کارخانه: {c.FactoryLevel} | ⚓ بندر: {c.PortLevel} | ⛏️ معدن: {c.MineLevel}";
-        var kbDetails = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("⚔️ جزئیات نظامی", $"eq_details:{c.OwnerId}") } });
+        var kbDetails = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("⚔️ جزئیات نظامی", $"eq_details:{c.OwnerId}") },
+            new[] { InlineKeyboardButton.WithCallbackData("🛡 اطلاعات نیروهای صف آرایی", $"dep_info:{c.OwnerId}") }
+        });
         if (!string.IsNullOrEmpty(c.FlagFileId)) await SendTempPhoto(chatId, c.FlagFileId, info, markup: kbDetails, ct: ct);
         else await SendTemp(chatId, info, markup: kbDetails, ct: ct);
     }
 
-    static async Task SendCountryEquipmentDetails(CallbackQuery cb, string[] parts, CancellationToken ct) { if (parts.Length < 2 || cb.Message == null) return; if (!TryParseLong(parts[1], out long targetUid)) return; long chatId = cb.Message.Chat.Id; var c = Database.GetCountry(targetUid, chatId); if (c == null) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور یافت نشد.", showAlert: true, cancellationToken: ct); return; } var fTanks = Database.GetEquipmentModels(targetUid, chatId, "Tanks"); long sumFTanks = fTanks.Sum(x => x.Count); long domTanks = Math.Max(0, c.Tanks - sumFTanks); var tList = new List<string>(); if (domTanks > 0) tList.Add($"  • {Database.GetDefaultTankModel(c.Faction)}: {domTanks:N0} عدد"); foreach (var ft in fTanks) tList.Add($"  • {ft.ModelName}: {ft.Count:N0} عدد"); if (tList.Count == 0) tList.Add("  • هیچ تانکی موجود نمی‌باشد."); var fPlanes = Database.GetEquipmentModels(targetUid, chatId, "Planes"); long sumFPlanes = fPlanes.Sum(x => x.Count); long domPlanes = Math.Max(0, c.Planes - sumFPlanes); var pList = new List<string>(); if (domPlanes > 0) pList.Add($"  • {Database.GetDefaultPlaneModel(c.Faction)}: {domPlanes:N0} عدد"); foreach (var fp in fPlanes) pList.Add($"  • {fp.ModelName}: {fp.Count:N0} عدد"); if (pList.Count == 0) pList.Add("  • هیچ جنگنده‌ای موجود نمی‌باشد."); var fBombers = Database.GetEquipmentModels(targetUid, chatId, "Bombers"); long sumFBombers = fBombers.Sum(x => x.Count); long domBombers = Math.Max(0, c.Bombers - sumFBombers); var bList = new List<string>(); if (domBombers > 0) bList.Add($"  • {Database.GetDefaultBomberModel(c.Faction)}: {domBombers:N0} عدد"); foreach (var fb in fBombers) bList.Add($"  • {fb.ModelName}: {fb.Count:N0} عدد"); if (bList.Count == 0) bList.Add("  • هیچ بمب‌افکنی موجود نمی‌باشد."); string msg = $"⚔️ <b>جزئیات و تفکیک تجهیزات نظامی {c.Name}:</b>\n\n🛡 <b>تجهیزات زرهی (تانک‌ها):</b>\n{string.Join("\n", tList)}\n\n✈️ <b>نیروی هوایی (جنگنده‌ها):</b>\n{string.Join("\n", pList)}🛩 <b>بمب‌افکن‌های راهبردی:</b>\n{string.Join("\n", bList)}\n\n🎯 <b>پدافند هوایی:</b> {c.AntiAir:N0} عدد"; await bot.SendTextMessageAsync(chatId, msg, parseMode: ParseMode.Html, replyToMessageId: cb.Message.MessageId, cancellationToken: ct); await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct); }
-    static string FullName(User u) => $"{u.FirstName} {u.LastName}".Trim();
+
+    static async Task SendCountryEquipmentDetails(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length < 2 || cb.Message == null) return;
+        if (!TryParseLong(parts[1], out long targetUid)) return;
+        if (targetUid != cb.From.Id)
+        {
+            await bot.AnswerCallbackQueryAsync(cb.Id, "⛔ این دکمه فقط برای صاحب کشور است!", showAlert: true, cancellationToken: ct);
+            return;
+        }
+        long uid = cb.From.Id;
+        long chatId = cb.Message.Chat.Id;
+        var c = Database.GetCountry(targetUid, chatId);
+        if (c == null)
+        {
+            await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور یافت نشد.", showAlert: true, cancellationToken: ct);
+            return;
+        }
+        if (c.OwnerId != cb.From.Id)
+        {
+            await bot.AnswerCallbackQueryAsync(cb.Id, "⛔ این دکمه فقط برای صاحب کشور است!", showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        // Helper to get faction from model name
+        Faction GetFactionFromModel(string modelName)
+        {
+            if (string.IsNullOrWhiteSpace(modelName)) return c.Faction;
+            string m = modelName.ToLowerInvariant();
+            if (m.Contains("bismarck") || m.Contains("s-boot") || m.Contains("sboot") || m.Contains("viic") || m.Contains("panzer") || m.Contains("bf 109") || m.Contains("he 111")) return Faction.Reich;
+            if (m.Contains("iowa") || m.Contains("pt") || m.Contains("gato") || m.Contains("m2") || m.Contains("p-36") || m.Contains("b-17")) return Faction.USA;
+            if (m.Contains("soyuz") || m.Contains("sovetsky") || m.Contains("g-5") || m.Contains("g5") || m.Contains("s-class") || m.Contains("t-28") || m.Contains("i-16") || m.Contains("db-3")) return Faction.USSR;
+            return c.Faction;
+        }
+        string FactionEmoji(Faction f) => f switch { Faction.USSR => "☭ شوروی", Faction.USA => "🇺🇸 آمریکا", Faction.Reich => "⚫ رایش", _ => f.ToString() };
+
+        // Tanks
+        var fTanks = Database.GetEquipmentModels(targetUid, chatId, "Tanks");
+        var tankGroups = new Dictionary<Faction, List<(string Model, long Count)>>();
+        long domTanks = Math.Max(0, c.Tanks - fTanks.Sum(x=>x.Count));
+        if (domTanks>0) { var f=Database.GetDefaultTankModel(c.Faction); var fac=GetFactionFromModel(f); if (!tankGroups.ContainsKey(fac)) tankGroups[fac]=new(); tankGroups[fac].Add((f, domTanks)); }
+        foreach (var ft in fTanks) { var fac=GetFactionFromModel(ft.ModelName); if (!tankGroups.ContainsKey(fac)) tankGroups[fac]=new(); tankGroups[fac].Add((ft.ModelName, ft.Count)); }
+
+        // Planes
+        var fPlanes = Database.GetEquipmentModels(targetUid, chatId, "Planes");
+        var planeGroups = new Dictionary<Faction, List<(string Model, long Count)>>();
+        long domPlanes = Math.Max(0, c.Planes - fPlanes.Sum(x=>x.Count));
+        if (domPlanes>0) { var f=Database.GetDefaultPlaneModel(c.Faction); var fac=GetFactionFromModel(f); if (!planeGroups.ContainsKey(fac)) planeGroups[fac]=new(); planeGroups[fac].Add((f, domPlanes)); }
+        foreach (var fp in fPlanes) { var fac=GetFactionFromModel(fp.ModelName); if (!planeGroups.ContainsKey(fac)) planeGroups[fac]=new(); planeGroups[fac].Add((fp.ModelName, fp.Count)); }
+
+        // Bombers
+        var fBombers = Database.GetEquipmentModels(targetUid, chatId, "Bombers");
+        var bomberGroups = new Dictionary<Faction, List<(string Model, long Count)>>();
+        long domBombers = Math.Max(0, c.Bombers - fBombers.Sum(x=>x.Count));
+        if (domBombers>0) { var f=Database.GetDefaultBomberModel(c.Faction); var fac=GetFactionFromModel(f); if (!bomberGroups.ContainsKey(fac)) bomberGroups[fac]=new(); bomberGroups[fac].Add((f, domBombers)); }
+        foreach (var fb in fBombers) { var fac=GetFactionFromModel(fb.ModelName); if (!bomberGroups.ContainsKey(fac)) bomberGroups[fac]=new(); bomberGroups[fac].Add((fb.ModelName, fb.Count)); }
+
+        // Boats – listed separately by faction
+        var fBoats = Database.GetEquipmentModels(targetUid, chatId, "Boats");
+        var boatGroups = new Dictionary<Faction, List<(string Model, long Count)>>();
+        long domBoats = Math.Max(0, c.Boats - fBoats.Sum(x=>x.Count));
+        if (domBoats>0) { var f=Database.GetDefaultBoatModel(c.Faction); var fac=GetFactionFromModel(f); if (!boatGroups.ContainsKey(fac)) boatGroups[fac]=new(); boatGroups[fac].Add((f, domBoats)); }
+        foreach (var fb in fBoats) { var fac=GetFactionFromModel(fb.ModelName); if (!boatGroups.ContainsKey(fac)) boatGroups[fac]=new(); boatGroups[fac].Add((fb.ModelName, fb.Count)); }
+
+        // Submarines – separately by faction
+        var fSubs = Database.GetEquipmentModels(targetUid, chatId, "Submarines");
+        var subGroups = new Dictionary<Faction, List<(string Model, long Count)>>();
+        long domSubs = Math.Max(0, c.Submarines - fSubs.Sum(x=>x.Count));
+        if (domSubs>0) { var f=Database.GetDefaultSubModel(c.Faction); var fac=GetFactionFromModel(f); if (!subGroups.ContainsKey(fac)) subGroups[fac]=new(); subGroups[fac].Add((f, domSubs)); }
+        foreach (var fs in fSubs) { var fac=GetFactionFromModel(fs.ModelName); if (!subGroups.ContainsKey(fac)) subGroups[fac]=new(); subGroups[fac].Add((fs.ModelName, fs.Count)); }
+
+        // Battleships – separately by faction
+        var fBS = Database.GetEquipmentModels(targetUid, chatId, "Battleships");
+        var bsGroups = new Dictionary<Faction, List<(string Model, long Count)>>();
+        long domBS = Math.Max(0, c.Battleships - fBS.Sum(x=>x.Count));
+        if (domBS>0) { var f=Database.GetDefaultBattleshipModel(c.Faction); var fac=GetFactionFromModel(f); if (!bsGroups.ContainsKey(fac)) bsGroups[fac]=new(); bsGroups[fac].Add((f, domBS)); }
+        foreach (var fb in fBS) { var fac=GetFactionFromModel(fb.ModelName); if (!bsGroups.ContainsKey(fac)) bsGroups[fac]=new(); bsGroups[fac].Add((fb.ModelName, fb.Count)); }
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"⚔️ <b>جزئیات نظامی {c.Name} (خصوصی):</b>");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine($"👤 مالک: {c.OwnerName} | 💰 {c.Money:N0} | 🔩 {c.Iron:N0} | ⛽ قایق {c.BoatsFuel}%");
+        if (c.BattleshipDamage>0) sb.AppendLine($"🔧 آسیب نبردناو: {c.BattleshipDamage}% | در دریا: {c.BoatsAtSea}🚤 {c.SubmarinesAtSea}⚓ {c.BattleshipsAtSea}🚢");
+        sb.AppendLine();
+
+        sb.AppendLine("🛡 <b>تانک‌ها (تفکیک فکشن):</b>");
+        if (tankGroups.Count==0) sb.AppendLine("  • هیچ تانکی موجود نمی‌باشد.");
+        else foreach (var kv in tankGroups) { sb.AppendLine($"  <b>— {FactionEmoji(kv.Key)} —</b>"); foreach (var it in kv.Value) sb.AppendLine($"    • {it.Model}: {it.Count:N0} عدد"); }
+        sb.AppendLine();
+
+        sb.AppendLine("✈️ <b>جنگنده‌ها (تفکیک فکشن):</b>");
+        if (planeGroups.Count==0) sb.AppendLine("  • هیچ جنگنده‌ای موجود نمی‌باشد.");
+        else foreach (var kv in planeGroups) { sb.AppendLine($"  <b>— {FactionEmoji(kv.Key)} —</b>"); foreach (var it in kv.Value) sb.AppendLine($"    • {it.Model}: {it.Count:N0} عدد"); }
+        sb.AppendLine();
+
+        sb.AppendLine("🛩 <b>بمب‌افکن‌ها (تفکیک فکشن):</b>");
+        if (bomberGroups.Count==0) sb.AppendLine("  • هیچ بمب‌افکنی موجود نمی‌باشد.");
+        else foreach (var kv in bomberGroups) { sb.AppendLine($"  <b>— {FactionEmoji(kv.Key)} —</b>"); foreach (var it in kv.Value) sb.AppendLine($"    • {it.Model}: {it.Count:N0} عدد"); }
+        sb.AppendLine();
+
+        sb.AppendLine("🚤 <b>قایق‌های تندرو — تفکیک فکشن (جداگانه):</b>");
+        if (boatGroups.Count==0) sb.AppendLine("  • هیچ قایقی موجود نمی‌باشد.");
+        else foreach (var kv in boatGroups) { sb.AppendLine($"  <b>— {FactionEmoji(kv.Key)} —</b>"); foreach (var it in kv.Value) sb.AppendLine($"    • {it.Model}: {it.Count:N0} عدد"); }
+        sb.AppendLine();
+
+        sb.AppendLine("⚓ <b>زیردریایی‌ها — تفکیک فکشن (جداگانه):</b>");
+        if (subGroups.Count==0) sb.AppendLine("  • هیچ زیردریایی موجود نمی‌باشد.");
+        else foreach (var kv in subGroups) { sb.AppendLine($"  <b>— {FactionEmoji(kv.Key)} —</b>"); foreach (var it in kv.Value) sb.AppendLine($"    • {it.Model}: {it.Count:N0} عدد"); }
+        sb.AppendLine();
+
+        sb.AppendLine("🚢 <b>نبردناوها — تفکیک فکشن (جداگانه):</b>");
+        if (bsGroups.Count==0) sb.AppendLine("  • هیچ نبردناوی موجود نمی‌باشد.");
+        else foreach (var kv in bsGroups) { sb.AppendLine($"  <b>— {FactionEmoji(kv.Key)} —</b>"); foreach (var it in kv.Value) sb.AppendLine($"    • {it.Model}: {it.Count:N0} عدد"); }
+        sb.AppendLine();
+
+        sb.AppendLine($"🎯 <b>پدافند هوایی:</b> {c.AntiAir:N0} عدد");
+        sb.AppendLine($"🛡 دفاع: تانک {c.DefenseTanks:N0} / سرباز {c.DefenseSoldiers:N0} / جنگنده {c.DefenseFighters:N0} / قایق {c.DefenseBoats:N0} / زیردریایی {c.DefenseSubmarines:N0}");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine("ℹ️ این اطلاعات خصوصی است و فقط برای مالک ارسال شد.");
+
+        // Private send – buttons are private
+        try { await bot.SendTextMessageAsync(uid, sb.ToString(), parseMode: ParseMode.Html, cancellationToken: ct); }
+        catch { await bot.SendTextMessageAsync(chatId, sb.ToString(), parseMode: ParseMode.Html, replyToMessageId: cb.Message.MessageId, cancellationToken: ct); }
+        await bot.AnswerCallbackQueryAsync(cb.Id, "✅ جزئیات نظامی به پیوی ارسال شد (خصوصی)", cancellationToken: ct);
+    }
+
+    static async Task SendDeploymentInfoDetails(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length < 2 || cb.Message == null) return;
+        if (!TryParseLong(parts[1], out long targetUid)) return;
+        if (targetUid != cb.From.Id)
+        {
+            await bot.AnswerCallbackQueryAsync(cb.Id, "⛔ این دکمه فقط برای صاحب کشور است!", showAlert: true, cancellationToken: ct);
+            return;
+        }
+        long uid = cb.From.Id;
+        long chatId = cb.Message.Chat.Id;
+        var c = Database.GetCountry(targetUid, chatId);
+        if (c == null)
+        {
+            await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور یافت نشد.", showAlert: true, cancellationToken: ct);
+            return;
+        }
+        if (c.OwnerId != cb.From.Id)
+        {
+            await bot.AnswerCallbackQueryAsync(cb.Id, "⛔ این دکمه فقط برای صاحب کشور است!", showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        try
+        {
+            var allDeps = Database.GetActiveDeployments().Where(d => d.ChatId == chatId).ToList();
+            // Filter: defensive targeting this country OR offensive initiated by this country OR user is contributor
+            var relevantDeps = new List<Deployment>();
+            var userContribDepIds = new HashSet<long>();
+            foreach (var dep in allDeps)
+            {
+                var contribs = Database.GetDeploymentContributors(dep.Id);
+                if (contribs.Any(cc => cc.UserId == targetUid) || dep.TargetUserId == targetUid || dep.InitiatorId == targetUid)
+                    relevantDeps.Add(dep);
+            }
+
+            if (relevantDeps.Count == 0)
+            {
+                await bot.SendTextMessageAsync(uid, $"🛡 <b>اطلاعات نیروهای صف آرایی برای {c.Name} (خصوصی):</b>\n\n❌ در حال حاضر هیچ نیروی صف آرایی فعالی مرتبط با شما وجود ندارد.\n\nنیروهای صف آرایی پس از ایجاد، در دارایی شما نمایش داده نمی‌شوند و فقط اینجا قابل مشاهده هستند.\nℹ️ این پیام خصوصی است.", parseMode: ParseMode.Html, cancellationToken: ct);
+                await bot.AnswerCallbackQueryAsync(cb.Id, "ℹ️ صف آرایی فعالی نیست – خصوصی ارسال شد", cancellationToken: ct);
+                return;
+            }
+
+            var factionGroups = new Dictionary<Faction, List<(string PlayerName, long Tanks, long Soldiers, long Fighters, long Bombers)>>();
+            long totalTanks=0, totalSoldiers=0, totalFighters=0, totalBombers=0;
+            var allContribsFlat = new List<(string PlayerName, Faction Faction, long Tanks, long Soldiers, long Fighters, long Bombers)>();
+
+            foreach (var dep in relevantDeps)
+            {
+                var contribs = Database.GetDeploymentContributors(dep.Id);
+                foreach (var contrib in contribs)
+                {
+                    var contribCountry = Database.GetCountry(contrib.UserId, chatId);
+                    Faction faction = contribCountry?.Faction ?? Faction.USA;
+                    string playerName = contribCountry?.OwnerName ?? $"کاربر {contrib.UserId}";
+                    allContribsFlat.Add((playerName, faction, contrib.Tanks, contrib.Soldiers, contrib.Fighters, contrib.Bombers));
+                    if (!factionGroups.ContainsKey(faction)) factionGroups[faction]=new List<(string, long, long, long, long)>();
+                    factionGroups[faction].Add((playerName, contrib.Tanks, contrib.Soldiers, contrib.Fighters, contrib.Bombers));
+                    totalTanks+=contrib.Tanks; totalSoldiers+=contrib.Soldiers; totalFighters+=contrib.Fighters; totalBombers+=contrib.Bombers;
+                }
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"🛡 <b>اطلاعات نیروهای صف آرایی برای {c.Name} (خصوصی):</b>");
+            sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+            sb.AppendLine($"📊 <b>مجموع کل نیروها:</b> 🛡 {totalTanks:N0} | 🪖 {totalSoldiers:N0} | ✈️ {totalFighters:N0} | 🛩 {totalBombers:N0}");
+            sb.AppendLine($"👥 مشارکت‌کنندگان: {allContribsFlat.Select(x=>x.PlayerName).Distinct().Count()} نفر در {relevantDeps.Count} صف آرایی");
+            sb.AppendLine();
+            sb.AppendLine("📋 <b>لیست صف آرایی‌های فعال:</b>");
+            foreach (var dep in relevantDeps.Take(10))
+            {
+                var target = Database.GetCountry(dep.TargetUserId, chatId);
+                string targetName = target?.Name ?? $"کاربر {dep.TargetUserId}";
+                string typeFa = dep.Type=="Offensive" ? "تهاجمی" : "دفاعی";
+                long remaining = dep.EndAtMs - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                string left = remaining>0 ? FormatRemaining(remaining) : "در حال پایان";
+                sb.AppendLine($"• {typeFa} به {targetName} | {dep.Tanks}🛡 {dep.Soldiers}🪖 | استراتژی {dep.Strategy} تاکتیک {dep.Tactic} | باقی {left}");
+            }
+            sb.AppendLine();
+            foreach (var kvp in factionGroups.OrderBy(k=>k.Key.ToString()))
+            {
+                string emoji = kvp.Key switch { Faction.USSR => "☭ شوروی", Faction.USA => "🇺🇸 آمریکا", Faction.Reich => "⚫ رایش", _ => kvp.Key.ToString() };
+                var fTanks = kvp.Value.Sum(x=>x.Tanks); var fSols = kvp.Value.Sum(x=>x.Soldiers); var fFig = kvp.Value.Sum(x=>x.Fighters); var fBom = kvp.Value.Sum(x=>x.Bombers);
+                sb.AppendLine($"<b>— {emoji} —</b> 🛡 {fTanks:N0} | 🪖 {fSols:N0} | ✈️ {fFig:N0} | 🛩 {fBom:N0}");
+                foreach (var p in kvp.Value) sb.AppendLine($"  • {p.PlayerName}: {p.Tanks}🛡 {p.Soldiers}🪖 {p.Fighters}✈️ {p.Bombers}🛩️");
+                sb.AppendLine();
+            }
+            sb.AppendLine("ℹ️ این نیروها در دارایی شما محاسبه نمی‌شوند و فقط در دفاع مشارکت دارند. پیام خصوصی است.");
+
+            await bot.SendTextMessageAsync(uid, sb.ToString(), parseMode: ParseMode.Html, cancellationToken: ct);
+            await bot.AnswerCallbackQueryAsync(cb.Id, "✅ اطلاعات صف آرایی به پیوی ارسال شد (خصوصی)", cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[DEP_INFO ERR] {ex.Message}");
+            try { await bot.SendTextMessageAsync(uid, $"❌ خطا در دریافت اطلاعات صف آرایی: {ex.Message} (خصوصی)", cancellationToken: ct); } catch {}
+            await bot.AnswerCallbackQueryAsync(cb.Id, "❌ خطا، دوباره تلاش کنید", showAlert: true, cancellationToken: ct);
+        }
+    }
+
+
+        static string FullName(User u) => $"{u.FirstName} {u.LastName}".Trim();
 
                     static string FormatRemaining(long ms)
     {
@@ -5111,8 +7226,167 @@ partial class Program
         "tanks" => "دستگاه تانک",
         "planes" => "فروند جنگنده",
         "bombers" => "فروند بمب‌افکن",
+        "boats" => "قایق تندرو",
+        "submarines" => "زیردریایی",
+        "battleships" => "نبردناو",
         _ => resType
     };
+
+    static List<(string ModelName, long Count)> GetTransferBreakdown(Country c, string resType)
+    {
+        var dict = new Dictionary<string, long>(StringComparer.Ordinal);
+        if (c == null) return new List<(string, long)>();
+
+        if (resType == "money")
+        {
+            if (c.Money > 0) return new List<(string, long)> { ("", c.Money) };
+            return new List<(string, long)>();
+        }
+        if (resType == "iron")
+        {
+            if (c.Iron > 0) return new List<(string, long)> { ("", c.Iron) };
+            return new List<(string, long)>();
+        }
+        if (resType == "soldiers")
+        {
+            if (c.Soldiers > 0) return new List<(string, long)> { ("", c.Soldiers) };
+            return new List<(string, long)>();
+        }
+        if (resType == "boats")
+        {
+            if (c.Boats > 0)
+            {
+                var models = Database.GetEquipmentModels(c.OwnerId, c.ChatId, "Boats");
+                if (models.Count > 0)
+                {
+                    var listB = new List<(string, long)>();
+                    foreach (var m in models.Where(x => x.Count > 0)) listB.Add((m.ModelName, m.Count));
+                    long sum = models.Sum(x => x.Count);
+                    long dom = Math.Max(0, c.Boats - sum);
+                    if (dom > 0) listB.Insert(0, (Database.GetDefaultBoatModel(c.Faction), dom));
+                    return listB;
+                }
+                return new List<(string, long)> { (Database.GetDefaultBoatModel(c.Faction), c.Boats) };
+            }
+            return new List<(string, long)>();
+        }
+        if (resType == "submarines")
+        {
+            if (c.Submarines > 0)
+            {
+                var models = Database.GetEquipmentModels(c.OwnerId, c.ChatId, "Submarines");
+                if (models.Count > 0)
+                {
+                    var listS = new List<(string, long)>();
+                    foreach (var m in models.Where(x => x.Count > 0)) listS.Add((m.ModelName, m.Count));
+                    long sum = models.Sum(x => x.Count);
+                    long dom = Math.Max(0, c.Submarines - sum);
+                    if (dom > 0) listS.Insert(0, (Database.GetDefaultSubModel(c.Faction), dom));
+                    return listS;
+                }
+                return new List<(string, long)> { (Database.GetDefaultSubModel(c.Faction), c.Submarines) };
+            }
+            return new List<(string, long)>();
+        }
+        if (resType == "battleships")
+        {
+            if (c.Battleships > 0)
+            {
+                var models = Database.GetEquipmentModels(c.OwnerId, c.ChatId, "Battleships");
+                if (models.Count > 0)
+                {
+                    var listBS = new List<(string, long)>();
+                    foreach (var m in models.Where(x => x.Count > 0)) listBS.Add((m.ModelName, m.Count));
+                    long sum = models.Sum(x => x.Count);
+                    long dom = Math.Max(0, c.Battleships - sum);
+                    if (dom > 0) listBS.Insert(0, (Database.GetDefaultBattleshipModel(c.Faction), dom));
+                    return listBS;
+                }
+                return new List<(string, long)> { (Database.GetDefaultBattleshipModel(c.Faction), c.Battleships) };
+            }
+            return new List<(string, long)>();
+        }
+
+        string category = resType switch { "tanks" => "Tanks", "planes" => "Planes", "bombers" => "Bombers", "boats" => "Boats", "submarines" => "Submarines", "battleships" => "Battleships", _ => "" };
+        if (string.IsNullOrEmpty(category)) return new List<(string, long)>();
+
+        long total = resType switch { "tanks" => c.Tanks, "planes" => c.Planes, "bombers" => c.Bombers, "boats" => c.Boats, "submarines" => c.Submarines, "battleships" => c.Battleships, _ => 0 };
+        if (total <= 0) return new List<(string, long)>();
+
+        var foreign = Database.GetEquipmentModels(c.OwnerId, c.ChatId, category);
+        long sumForeign = foreign.Sum(x => x.Count);
+        long dom2 = Math.Max(0, total - sumForeign);
+
+        string defaultModel = resType switch
+        {
+            "tanks" => Database.GetDefaultTankModel(c.Faction),
+            "planes" => Database.GetDefaultPlaneModel(c.Faction),
+            "bombers" => Database.GetDefaultBomberModel(c.Faction),
+            "boats" => Database.GetDefaultBoatModel(c.Faction),
+            "submarines" => Database.GetDefaultSubModel(c.Faction),
+            "battleships" => Database.GetDefaultBattleshipModel(c.Faction),
+            _ => ""
+        };
+
+        if (dom2 > 0)
+        {
+            if (!dict.ContainsKey(defaultModel)) dict[defaultModel] = 0;
+            dict[defaultModel] += dom2;
+        }
+
+        foreach (var f in foreign.Where(x => x.Count > 0))
+        {
+            if (!dict.ContainsKey(f.ModelName)) dict[f.ModelName] = 0;
+            dict[f.ModelName] += f.Count;
+        }
+
+        var list = new List<(string ModelName, long Count)>();
+        if (dict.ContainsKey(defaultModel))
+        {
+            list.Add((defaultModel, dict[defaultModel]));
+            dict.Remove(defaultModel);
+        }
+        foreach (var kv in dict)
+            list.Add((kv.Key, kv.Value));
+
+        return list;
+    }
+
+    static List<(string ModelName, long Count, int DefPct)> GetDefenseBreakdown(Country c, string resType)
+    {
+        var transferBreakdown = GetTransferBreakdown(c, resType);
+        string category = resType switch { "tanks" => "Tanks", "planes" => "Planes", "bombers" => "Bombers", "boats" => "Boats", "submarines" => "Submarines", "battleships" => "Battleships", _ => "" };
+        var defenseMap = new Dictionary<string, int>(StringComparer.Ordinal);
+        if (!string.IsNullOrEmpty(category))
+        {
+            var defModels = Database.GetDefenseModels(c.OwnerId, c.ChatId, category);
+            foreach (var dm in defModels)
+                defenseMap[dm.ModelName] = dm.DefPct;
+        }
+        var result = new List<(string ModelName, long Count, int DefPct)>();
+        foreach (var (model, count) in transferBreakdown)
+        {
+            int pct = 100;
+            if (defenseMap.TryGetValue(model, out int saved)) pct = saved;
+            else if (resType == "tanks" && c.DefTankPct > 0) pct = c.DefTankPct;
+            else if (resType == "planes" && c.DefFighterPct > 0) pct = c.DefFighterPct;
+            else if (resType == "boats" && c.DefTankPct > 0) pct = c.DefTankPct; // reuse tank pct for boats fallback, or 100
+            else if (resType == "submarines" && c.DefTankPct > 0) pct = c.DefTankPct;
+            else if (resType == "soldiers" && c.DefSoldierPct > 0) pct = c.DefSoldierPct;
+            result.Add((model, count, Math.Clamp(pct, 20, 100)));
+        }
+        // If no breakdown but total exists (e.g., soldiers, boats), ensure at least one entry
+        if (result.Count == 0)
+        {
+            long total = resType switch { "soldiers" => c.Soldiers, "boats" => c.Boats, "submarines" => c.Submarines, "battleships" => c.Battleships, _ => 0 };
+            if (total > 0)
+            {
+                int pct = resType == "soldiers" ? c.DefSoldierPct : 100;
+                result.Add(("", total, pct));
+            }
+        }
+        return result;
+    }
 
     static async Task ProcessActiveTransfers(CancellationToken ct)
     {
@@ -5129,19 +7403,74 @@ partial class Program
             {
                 if (receiver != null)
                 {
+                    //  – battleship cap check
+                    if (t.ResourceType == "battleships" && receiver.Battleships >= 3)
+                    {
+                        // Return to sender
+                        if (sender != null)
+                        {
+                            sender.Battleships += t.Amount;
+                            Database.AddEquipmentModel(sender.OwnerId, sender.ChatId, "Battleships", string.IsNullOrWhiteSpace(t.ModelName) ? Database.GetDefaultBattleshipModel(sender.Faction) : t.ModelName, t.Amount);
+                            Database.UpdateCountryFull(sender);
+                            try { await bot.SendTextMessageAsync(t.SenderId, $"❌ ترنسفر نبردناو به {rName} ناموفق – گیرنده حداکثر 3 نبردناو دارد (تعداد نبرد ناو: 3). محموله برگشت خورد.", cancellationToken: ct); } catch { }
+                        }
+                        Database.DeleteTransfer(t.Id);
+                        continue;
+                    }
+
                     switch (t.ResourceType)
                     {
                         case "money": receiver.Money += t.Amount; break;
                         case "iron": receiver.Iron += t.Amount; break;
                         case "soldiers": receiver.Soldiers += t.Amount; break;
-                        case "tanks": receiver.Tanks += t.Amount; Database.AddEquipmentModel(t.ReceiverId, t.ChatId, "Tanks", Database.GetDefaultTankModel(sender?.Faction ?? receiver.Faction), t.Amount); break;
-                        case "planes": receiver.Planes += t.Amount; Database.AddEquipmentModel(t.ReceiverId, t.ChatId, "Planes", Database.GetDefaultPlaneModel(sender?.Faction ?? receiver.Faction), t.Amount); break;
-                        case "bombers": receiver.Bombers += t.Amount; Database.AddEquipmentModel(t.ReceiverId, t.ChatId, "Bombers", Database.GetDefaultBomberModel(sender?.Faction ?? receiver.Faction), t.Amount); break;
+                        case "tanks":
+                            receiver.Tanks += t.Amount;
+                            {
+                                var model = string.IsNullOrWhiteSpace(t.ModelName) ? Database.GetDefaultTankModel(sender?.Faction ?? receiver.Faction) : t.ModelName;
+                                Database.AddEquipmentModel(t.ReceiverId, t.ChatId, "Tanks", model, t.Amount);
+                            }
+                            break;
+                        case "planes":
+                            receiver.Planes += t.Amount;
+                            {
+                                var model = string.IsNullOrWhiteSpace(t.ModelName) ? Database.GetDefaultPlaneModel(sender?.Faction ?? receiver.Faction) : t.ModelName;
+                                Database.AddEquipmentModel(t.ReceiverId, t.ChatId, "Planes", model, t.Amount);
+                            }
+                            break;
+                        case "bombers":
+                            receiver.Bombers += t.Amount;
+                            {
+                                var model = string.IsNullOrWhiteSpace(t.ModelName) ? Database.GetDefaultBomberModel(sender?.Faction ?? receiver.Faction) : t.ModelName;
+                                Database.AddEquipmentModel(t.ReceiverId, t.ChatId, "Bombers", model, t.Amount);
+                            }
+                            break;
+                        case "boats":
+                            receiver.Boats += t.Amount;
+                            {
+                                var model = string.IsNullOrWhiteSpace(t.ModelName) ? Database.GetDefaultBoatModel(sender?.Faction ?? receiver.Faction) : t.ModelName;
+                                Database.AddEquipmentModel(t.ReceiverId, t.ChatId, "Boats", model, t.Amount);
+                            }
+                            break;
+                        case "submarines":
+                            receiver.Submarines += t.Amount;
+                            {
+                                var model = string.IsNullOrWhiteSpace(t.ModelName) ? Database.GetDefaultSubModel(sender?.Faction ?? receiver.Faction) : t.ModelName;
+                                Database.AddEquipmentModel(t.ReceiverId, t.ChatId, "Submarines", model, t.Amount);
+                            }
+                            break;
+                        case "battleships":
+                            receiver.Battleships += t.Amount;
+                            {
+                                var model = string.IsNullOrWhiteSpace(t.ModelName) ? Database.GetDefaultBattleshipModel(sender?.Faction ?? receiver.Faction) : t.ModelName;
+                                Database.AddEquipmentModel(t.ReceiverId, t.ChatId, "Battleships", model, t.Amount);
+                            }
+                            break;
                     }
                     Database.UpdateCountryFull(receiver);
                     Database.ReconcileDefense(t.ReceiverId, t.ChatId);
                     Database.DeleteTransfer(t.Id);
-                    try { await bot.SendTextMessageAsync(t.ReceiverId, $"📦 محموله رسید!\n{t.Amount:N0} {rn} از {sName}", cancellationToken: ct); } catch { }
+                    string modelInfo = string.IsNullOrWhiteSpace(t.ModelName) ? "" : $" ({t.ModelName})";
+                    try { await bot.SendTextMessageAsync(t.ReceiverId, $"📦 محموله رسید!\n{t.Amount:N0} {rn}{modelInfo} از {sName}", cancellationToken: ct); } catch { }
                     try { await bot.SendTextMessageAsync(t.SenderId, $"✅ محموله به {rName} تحویل شد.", cancellationToken: ct); } catch { }
                 }
                 else
@@ -5156,6 +7485,9 @@ partial class Program
                             case "tanks": sender.Tanks += t.Amount; break;
                             case "planes": sender.Planes += t.Amount; break;
                             case "bombers": sender.Bombers += t.Amount; break;
+                            case "boats": sender.Boats += t.Amount; break;
+                            case "submarines": sender.Submarines += t.Amount; break;
+                            case "battleships": sender.Battleships += t.Amount; break;
                         }
                         Database.UpdateCountryFull(sender);
                         Database.ReconcileDefense(t.SenderId, t.ChatId);
@@ -5245,8 +7577,7 @@ partial class Program
                 }
                 else
                 {
-                    var tcDef = Database.GetCountry(d.TargetUserId, d.ChatId);
-                    if (tcDef != null) { tcDef.Tanks = Math.Max(0, tcDef.Tanks - d.Tanks); tcDef.Soldiers = Math.Max(0, tcDef.Soldiers - d.Soldiers); tcDef.Planes = Math.Max(0, tcDef.Planes - d.Fighters); tcDef.Bombers = Math.Max(0, tcDef.Bombers - d.Bombers); tcDef.DefenseTanks = Math.Max(0, tcDef.DefenseTanks - d.Tanks); tcDef.DefenseSoldiers = Math.Max(0, tcDef.DefenseSoldiers - d.Soldiers); tcDef.DefenseFighters = Math.Max(0, tcDef.DefenseFighters - d.Fighters); Database.UpdateCountryFull(tcDef); Database.ReconcileDefense(tcDef.OwnerId, d.ChatId); }
+                    //  – defensive troops no longer in target assets, just return to contributors
                     var defC = Database.GetDeploymentContributors(d.Id);
                     long oT = defC.Sum(x => x.Tanks), oS = defC.Sum(x => x.Soldiers), oF = defC.Sum(x => x.Fighters), oB = defC.Sum(x => x.Bombers);
                     double tr = oT > 0 ? (double)Math.Max(0, d.Tanks) / oT : 1.0;
@@ -5270,10 +7601,57 @@ partial class Program
         }
     }
 
+    static async Task RefreshDeploymentAnnouncement(long depId, CancellationToken ct = default)
+    {
+        try
+        {
+            var dep = Database.GetDeploymentById(depId);
+            if (dep == null || dep.AnnounceMsgId == 0) return;
+            var alliance = Database.GetAllianceById(dep.AllianceId);
+            string allyName = alliance?.Name ?? "اتحاد";
+            var targetCountry = Database.GetCountry(dep.TargetUserId, dep.ChatId);
+            string tName = targetCountry?.Name ?? $"کاربر {dep.TargetUserId}";
+            string targetTag = targetCountry != null ? HtmlTag(targetCountry.OwnerName, targetCountry.OwnerId) : $"کاربر {dep.TargetUserId}";
+
+            var contribs = Database.GetDeploymentContributors(depId);
+            var participantTags = new List<string>();
+            foreach (var cbn in contribs)
+            {
+                var cc = Database.GetCountry(cbn.UserId, dep.ChatId);
+                if (cc != null) participantTags.Add(HtmlTag(cc.OwnerName, cc.OwnerId));
+                else participantTags.Add($"<a href=\"tg://user?id={cbn.UserId}\">کاربر {cbn.UserId}</a>");
+            }
+            string tags = string.Join(" ", participantTags.Distinct());
+
+            bool isOff = dep.Type == "Offensive";
+            long endMs = dep.EndAtMs;
+            string bText = isOff ?
+                $"🚨 <b>اعلان جنگ و صف‌آرایی تهاجمی!</b> ⚔️\n\n👑 اتحاد <b>«{allyName}»</b> علیه کشور <b>«{tName}»</b> (مالک: {targetTag}) صف‌آرایی کرد!\n⏱ مدت: <b>{dep.DurationHours} ساعت</b> (پایان: {FormatTime(endMs)})\n\n💥 <b>نیروهای فعلی:</b>\n🪖 سرباز: {dep.Soldiers:N0} | 🛡 تانک: {dep.Tanks:N0}\n✈️ جنگنده: {dep.Fighters:N0} | 🛩 بمب‌افکن: {dep.Bombers:N0}\n\n👥 مشارکت‌کنندگان ({contribs.Count} نفر):\n{tags}\n\n🎯 استراتژی: {dep.Strategy} | تاکتیک: {dep.Tactic}" :
+                $"🛡 <b>اعلام صف‌آرایی دفاعی!</b> 🏰\n\n👑 اتحاد <b>«{allyName}»</b> برای حمایت از کشور <b>«{tName}»</b> (مالک: {targetTag}) خط پدافندی تشکیل داد!\n⏱ مدت: <b>{dep.DurationHours} ساعت</b> (پایان: {FormatTime(endMs)})\n\n🛡 <b>نیروهای پشتیبان فعلی:</b>\n🪖 سرباز: {dep.Soldiers:N0} | 🛡 تانک: {dep.Tanks:N0}\n✈️ جنگنده: {dep.Fighters:N0} | 🛩 بمب‌افکن: {dep.Bombers:N0}\n\n👥 مشارکت‌کنندگان ({contribs.Count} نفر):\n{tags}\n\n🎯 استراتژی: {dep.Strategy} | تاکتیک: {dep.Tactic}";
+
+            var joinKb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("⚔️ مشارکت و اعزام نیرو", $"dep_join:{depId}") } });
+
+            // Try edit caption if photo, else text
+            try
+            {
+                await bot.EditMessageCaptionAsync(dep.ChatId, dep.AnnounceMsgId, bText, parseMode: ParseMode.Html, replyMarkup: joinKb, cancellationToken: ct);
+            }
+            catch
+            {
+                try { await bot.EditMessageTextAsync(dep.ChatId, dep.AnnounceMsgId, bText, parseMode: ParseMode.Html, replyMarkup: joinKb, cancellationToken: ct); } catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[REFRESH DEP ANNOUNCE ERR] {ex.Message}");
+        }
+    }
+
     static async Task RunAssetUpdateCore()
     {
         try { await ProcessActiveTransfers(CancellationToken.None); } catch (Exception ex) { Console.WriteLine($"[Transfers ERR] {ex.Message}"); }
         try { await ProcessActiveDeployments(CancellationToken.None); } catch (Exception ex) { Console.WriteLine($"[Deployments ERR] {ex.Message}"); }
+        try { await ProcessNavalInvasions(CancellationToken.None); } catch (Exception ex) { Console.WriteLine($"[NavalInvasions ERR] {ex.Message}"); }
         attackCounts.Clear();
         transferCounts.Clear();
         lastAssetUpdateAt = DateTime.UtcNow;
@@ -5295,6 +7673,30 @@ partial class Program
             c.Population = newPop;
             c.Soldiers = newSol;
             c.Welfare = newWelfare;
+
+            //  – auto refuel boats if fuel <100 and enough iron and port >=1
+            if (c.Boats > 0 && c.BoatsFuel < 100)
+            {
+                long needIron = c.Boats * (100 - c.BoatsFuel) / 20; // 5% per boat per 1% fuel? small
+                if (needIron <= 0) needIron = c.Boats * 1;
+                if (c.Iron >= needIron && c.PortLevel >= 1)
+                {
+                    c.Iron -= needIron;
+                    c.BoatsFuel = 100;
+                    Database.SetBoatFuelPct(c.OwnerId, c.ChatId, 100);
+                    Console.WriteLine($"[AUTO REFUEL] {c.Name} boats refueled for {needIron} iron");
+                }
+            }
+            if (c.Submarines > 0 && c.SubmarinesFuel < 100)
+            {
+                long needIron = c.Submarines * (100 - c.SubmarinesFuel) / 10;
+                if (c.Iron >= needIron && c.PortLevel >= 1)
+                {
+                    c.Iron -= needIron;
+                    c.SubmarinesFuel = 100;
+                }
+            }
+
             Database.UpdateCountryFull(c);
             Database.ReconcileDefense(c.OwnerId, c.ChatId);
         }
@@ -5304,7 +7706,8 @@ partial class Program
             "💰 مالیات و درآمد ساختمان‌ها به خزانه واریز شد\n" +
             "👥 جمعیت بر اساس رفاه رشد کرد\n" +
             "🪖 سربازگیری طبق نرخ انجام شد\n" +
-            "🏥 رفاه بر اساس مالیات، سربازگیری و بندر به‌روزرسانی شد\n\n" +
+            "🏥 رفاه بر اساس مالیات، سربازگیری و بندر به‌روزرسانی شد\n" +
+            "⛽ سوخت قایق‌ها در صورت نیاز به صورت خودکار تامین شد\n\n" +
             "📊 برای مشاهدهٔ جزئیات بنویسید: کشورم";
         var chatIds = countries.Select(x => x.ChatId).Distinct().ToList();
         int sentGroups = 0;
@@ -5381,15 +7784,172 @@ partial class Program
         }
     }
 
+    static async Task ProcessNavalInvasions(CancellationToken ct)
+    {
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var pending = Database.GetPendingNavalInvasions(now);
+        if (pending.Count == 0) return;
+        Console.WriteLine($"[NAVAL] Processing {pending.Count} pending invasions");
+        foreach (var inv in pending)
+        {
+            try
+            {
+                var attacker = Database.GetCountry(inv.AttackerId, inv.ChatId);
+                var defender = Database.GetCountry(inv.DefenderId, inv.ChatId);
+                if (attacker == null || defender == null)
+                {
+                    // Return at-sea fleet to attacker if attacker exists
+                    if (attacker != null)
+                    {
+                        attacker.Boats += inv.Boats;
+                        attacker.Submarines += inv.Submarines;
+                        attacker.Battleships += inv.Battleships;
+                        attacker.BoatsAtSea = Math.Max(0, attacker.BoatsAtSea - inv.Boats);
+                        attacker.SubmarinesAtSea = Math.Max(0, attacker.SubmarinesAtSea - inv.Submarines);
+                        attacker.BattleshipsAtSea = Math.Max(0, attacker.BattleshipsAtSea - inv.Battleships);
+                        Database.UpdateCountryFull(attacker);
+                    }
+                    Database.MarkNavalInvasionProcessed(inv.Id);
+                    Database.DeleteNavalInvasion(inv.Id);
+                    continue;
+                }
+
+                // Reconstruct breakdowns from stored strings
+                List<(string Model, long Count)> attBoatBreak = new();
+                List<(string Model, long Count)> attSubBreak = new();
+                List<(string Model, long Count)> attBSBreak = new();
+                List<(string Model, long Count)> defBoatBreak = new();
+                List<(string Model, long Count)> defSubBreak = new();
+                List<(string Model, long Count)> defBSBreak = new();
+
+                // Attacker breakdowns
+                if (!string.IsNullOrWhiteSpace(inv.BoatModels))
+                {
+                    foreach (var part in inv.BoatModels.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var sp = part.Split(':');
+                        if (sp.Length == 2 && long.TryParse(sp[1], out long cnt)) attBoatBreak.Add((sp[0], cnt));
+                    }
+                }
+                else if (inv.Boats > 0) attBoatBreak.Add((Database.GetDefaultBoatModel(attacker.Faction), inv.Boats));
+
+                if (!string.IsNullOrWhiteSpace(inv.SubModels))
+                {
+                    foreach (var part in inv.SubModels.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var sp = part.Split(':');
+                        if (sp.Length == 2 && long.TryParse(sp[1], out long cnt)) attSubBreak.Add((sp[0], cnt));
+                    }
+                }
+                else if (inv.Submarines > 0) attSubBreak.Add((Database.GetDefaultSubModel(attacker.Faction), inv.Submarines));
+
+                if (!string.IsNullOrWhiteSpace(inv.BattleshipModels))
+                {
+                    foreach (var part in inv.BattleshipModels.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var sp = part.Split(':');
+                        if (sp.Length == 2 && long.TryParse(sp[1], out long cnt)) attBSBreak.Add((sp[0], cnt));
+                    }
+                }
+                else if (inv.Battleships > 0) attBSBreak.Add((Database.GetDefaultBattleshipModel(attacker.Faction), inv.Battleships));
+
+                // Defender breakdowns from current fleet
+                var defBoatModels = Database.GetEquipmentModels(defender.OwnerId, defender.ChatId, "Boats");
+                if (defBoatModels.Count > 0) foreach (var m in defBoatModels) defBoatBreak.Add((m.ModelName, m.Count));
+                else if (defender.Boats > 0) defBoatBreak.Add((Database.GetDefaultBoatModel(defender.Faction), defender.Boats));
+
+                var defSubModels = Database.GetEquipmentModels(defender.OwnerId, defender.ChatId, "Submarines");
+                if (defSubModels.Count > 0) foreach (var m in defSubModels) defSubBreak.Add((m.ModelName, m.Count));
+                else if (defender.Submarines > 0) defSubBreak.Add((Database.GetDefaultSubModel(defender.Faction), defender.Submarines));
+
+                var defBSModels = Database.GetEquipmentModels(defender.OwnerId, defender.ChatId, "Battleships");
+                if (defBSModels.Count > 0) foreach (var m in defBSModels) defBSBreak.Add((m.ModelName, m.Count));
+                else if (defender.Battleships > 0) defBSBreak.Add((Database.GetDefaultBattleshipModel(defender.Faction), defender.Battleships));
+
+                // Run naval battle – use defender's ground defense as naval defense (port level influences inside engine)
+                int defStrat = defender.DefenseStrategy > 0 ? defender.DefenseStrategy : 1;
+                int defTac = defender.DefenseTactic > 0 ? defender.DefenseTactic : 1;
+                var result = WarEngine.RunNavalBattleAdvanced(attacker, defender, attBoatBreak, attSubBreak, attBSBreak, defBoatBreak, defSubBreak, defBSBreak, inv.Strategy, inv.Tactic, defStrat, defTac);
+
+                // Apply attacker surviving returns
+                attacker.BoatsAtSea = Math.Max(0, attacker.BoatsAtSea - inv.Boats);
+                attacker.SubmarinesAtSea = Math.Max(0, attacker.SubmarinesAtSea - inv.Submarines);
+                attacker.BattleshipsAtSea = Math.Max(0, attacker.BattleshipsAtSea - inv.Battleships);
+
+                attacker.Boats += result.AttackerBoatsSurvived;
+                attacker.Submarines += result.AttackerSubsSurvived;
+                attacker.Battleships += result.AttackerBattleshipsSurvived;
+                attacker.BattleshipDamage += result.AttackerBattleshipDamage;
+                // fuel consumed
+                attacker.BoatsFuel = 0;
+                attacker.SubmarinesFuel = Math.Max(0, attacker.SubmarinesFuel - 30);
+                Database.SetBoatFuelPct(attacker.OwnerId, attacker.ChatId, 0);
+                attacker.Boats += 0; // already added survivors
+
+                // Apply defender losses
+                // For simplicity, deduct from total counts proportionally to breakdowns
+                long defBoatLoss = result.DefenderBoatsLost;
+                long defSubLoss = result.DefenderSubsLost;
+                long defBSLoss = result.DefenderBattleshipsLost;
+                defender.Boats = Math.Max(0, defender.Boats - defBoatLoss);
+                defender.Submarines = Math.Max(0, defender.Submarines - defSubLoss);
+                defender.Battleships = Math.Max(0, defender.Battleships - defBSLoss);
+                defender.BattleshipDamage += result.DefenderBattleshipDamage;
+
+                // If success >=90, port level -1
+                if (result.SuccessPercent >= 90)
+                {
+                    defender.PortLevel = Math.Max(1, defender.PortLevel - 1);
+                }
+
+                // Loot
+                defender.Money = Math.Max(0, defender.Money - result.DefenderMoneyLost);
+                defender.Iron = Math.Max(0, defender.Iron - result.DefenderIronLost);
+                attacker.Money += result.AttackerMoneyGained;
+                attacker.Iron += result.AttackerIronGained;
+
+                Database.UpdateCountryFull(attacker);
+                Database.UpdateCountryFull(defender);
+                Database.ReconcileDefense(attacker.OwnerId, attacker.ChatId);
+                Database.ReconcileDefense(defender.OwnerId, defender.ChatId);
+
+                // Shield hit counting
+                Database.AddAttackShieldHit(defender.OwnerId, defender.ChatId);
+                // Check if shield triggered now
+                if (Database.IsAttackShieldActive(defender.OwnerId, defender.ChatId))
+                {
+                    long until = Database.GetAttackShieldUntilMs(defender.OwnerId, defender.ChatId);
+                    string fmt = FormatTime(until);
+                    try { await bot.SendTextMessageAsync(inv.ChatId, $"🛡 {defender.Name} به دلیل 5 حمله دریایی متوالی، به مدت 16 ساعت سپر گرفت! تا {fmt} قابل حمله نیست.", cancellationToken: ct); } catch { }
+                }
+
+                // Notifications – attacker private, defender private, group
+                try { await SendPermanent(inv.AttackerId, result.AttackerReport, ct: ct); } catch { }
+                try { await SendPermanent(inv.DefenderId, result.DefenderReport, ct: ct); } catch { }
+                try { await SendPermanent(inv.ChatId, result.GroupAnnouncement, ct: ct); } catch { }
+
+                Database.MarkNavalInvasionProcessed(inv.Id);
+                Database.DeleteNavalInvasion(inv.Id);
+
+                await Task.Delay(100, ct);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[NAVAL INV {inv.Id} ERR] {ex.Message}");
+                try { Database.MarkNavalInvasionProcessed(inv.Id); Database.DeleteNavalInvasion(inv.Id); } catch { }
+            }
+        }
+    }
+
     static async Task HandleAttackGroupCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
 {
         if (Database.HasAttackAbandonLock(cb.From.Id)) { await bot.AnswerCallbackQueryAsync(cb.Id, "⛔ شما تا ۳ روز به دلیل بزن‌دررو از حمله قفل هستید.", showAlert: true, cancellationToken: ct); return; }
         if (parts.Length < 2 || cb.Message == null) return;
         long uid = cb.From.Id;
         if (!TryParseLong(parts[1], out long cid)) return;
-        var targets = Database.GetCountriesByChatId(cid).Where(c => c.OwnerId != uid).ToList();
+        var targets = Database.GetAttackableTargets(cid, uid);
         if (targets.Count == 0) { await bot.AnswerCallbackQueryAsync(cb.Id, "هدف نیست.", cancellationToken: ct); return; }
-        var kb = targets.Select(t => new[] { InlineKeyboardButton.WithCallbackData(t.OwnerName, $"attack_target:{cid}:{t.OwnerId}") }).ToArray();
+        var kb = targets.Select(t => new[] { InlineKeyboardButton.WithCallbackData($"{t.Name} ({t.OwnerName})", $"attack_target:{cid}:{t.OwnerId}") }).ToArray();
         sessions[uid] = new UserSession { Step = SessionStep.AttackWaitingTarget, AttackChatId = cid };
         await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, "🎯 هدف:", replyMarkup: new InlineKeyboardMarkup(kb), cancellationToken: ct);
         TrackPrompt(uid, cb.Message.Chat.Id, cb.Message.MessageId);
@@ -5412,6 +7972,7 @@ partial class Program
             return;
 
         var defender = Database.GetCountry(tid, cid);
+        var attacker = Database.GetCountry(uid, cid);
 
         if (defender == null)
         {
@@ -5423,12 +7984,34 @@ partial class Program
             return;
         }
 
+        //  – shield check (5 attacks => 16h shield)
+        if (Database.IsAttackShieldActive(tid, cid))
+        {
+            long until = Database.GetAttackShieldUntilMs(tid, cid);
+            long leftMs = until - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            long leftH = Math.Max(1, leftMs / 3600000);
+            await bot.AnswerCallbackQueryAsync(cb.Id, $"🛡 {defender.Name} به دلیل 5 حمله اخیر تا {leftH} ساعت دیگر سپر 16 ساعته دارد و قابل حمله نیست!", showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        // Power ratio check already for naval, but also ground – 1/4 rule
+        if (attacker != null)
+        {
+            long attMP = CalcManpower(attacker);
+            long defMP = CalcManpower(defender);
+            if (defMP < attMP / 4)
+            {
+                await bot.AnswerCallbackQueryAsync(cb.Id, "⛔ حمله به کشوری با قدرت کمتر از یک چهارم قدرت شما ممنوع است!", showAlert: true, cancellationToken: ct);
+                return;
+            }
+        }
+
         var session = sessions.GetOrAdd(
             uid,
             _ => new UserSession()
         );
 
-        session.Step = SessionStep.AttackWaitingStrategy;
+        session.Step = SessionStep.AttackWaitingAttackType;
         session.AttackChatId = cid;
         session.AttackTargetId = tid;
 
@@ -5437,22 +8020,24 @@ partial class Program
             new[]
             {
                 InlineKeyboardButton.WithCallbackData(
-                    "⚔️ هجوم منسجم",
-                    $"attack_strategy:{cid}:{tid}:1"
+                    "⚔️ حمله زمینی / هوایی (غیر دریایی)",
+                    $"attack_type:{cid}:{tid}:ground"
                 )
             },
             new[]
             {
                 InlineKeyboardButton.WithCallbackData(
-                    "⭕ محاصره و ضربه",
-                    $"attack_strategy:{cid}:{tid}:2"
+                    "⚓ حمله دریایی",
+                    $"attack_type:{cid}:{tid}:naval"
                 )
             }
         });
 
         string text =
             $"🎯 هدف: {defender.Name}\n\n" +
-            GroundAttackStrategyGuide;
+            "لطفاً نوع حمله را انتخاب کنید:\n\n" +
+            "⚔️ غیر دریایی = نبرد زمینی و هوایی\n" +
+            "⚓ دریایی = نبرد دریایی (ناوگان)";
 
         await bot.EditMessageTextAsync(
             cb.Message.Chat.Id,
@@ -5472,6 +8057,170 @@ partial class Program
             cb.Id,
             cancellationToken: ct
         );
+    }
+
+    static async Task HandleAttackTypeCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length < 4 || cb.Message == null) return;
+        long uid = cb.From.Id;
+        if (!TryParseLong(parts[1], out long cid) || !TryParseLong(parts[2], out long tid)) return;
+        string type = parts[3]; // ground or naval
+        var session = sessions.GetOrAdd(uid, _ => new UserSession());
+        session.AttackChatId = cid;
+        session.AttackTargetId = tid;
+        session.AttackIsNaval = type == "naval";
+
+        if (session.AttackIsNaval)
+        {
+            // Check power ratios and other naval rules before proceeding
+            var attacker = Database.GetCountry(uid, cid);
+            var defender = Database.GetCountry(tid, cid);
+            if (attacker == null || defender == null)
+            {
+                await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور یافت نشد.", showAlert: true, cancellationToken: ct);
+                return;
+            }
+
+            // Rule: attacking someone with less than 1/4 of our power is forbidden
+            long attMP = CalcManpower(attacker);
+            long defMP = CalcManpower(defender);
+            if (defMP < attMP / 4)
+            {
+                await bot.AnswerCallbackQueryAsync(cb.Id, "⛔ حمله به کشوری با قدرت کمتر از یک چهارم قدرت شما ممنوع است!", showAlert: true, cancellationToken: ct);
+                return;
+            }
+
+            // Rule: attacking with battleship when enemy naval force < 3/4 of ours is impossible
+            long attNaval = attacker.Boats + attacker.Submarines + attacker.Battleships * 10;
+            long defNaval = defender.Boats + defender.Submarines + defender.Battleships * 10;
+            if (attacker.Battleships > 0 && defNaval < attNaval * 3 / 4)
+            {
+                await bot.AnswerCallbackQueryAsync(cb.Id, "⛔ نیروی دریایی دشمن کمتر از 3/4 نیروی شماست – حمله با نبردناو ممکن نیست!", showAlert: true, cancellationToken: ct);
+                return;
+            }
+
+            session.Step = SessionStep.AttackWaitingStrategy;
+            // Show naval strategy selection (2 offensive naval strategies)
+            var keyboard = new InlineKeyboardMarkup(new[]
+            {
+                new[] { InlineKeyboardButton.WithCallbackData("⚔️ نابودی ناوگان اصلی دشمن", $"attack_naval_strategy:{cid}:{tid}:1") },
+                new[] { InlineKeyboardButton.WithCallbackData("🌊 عملیات آبی‌خاکی و تهاجم ساحلی", $"attack_naval_strategy:{cid}:{tid}:2") }
+            });
+            string text = $"🎯 هدف: {defender.Name}\n\n⚓ **استراتژی حمله دریایی را انتخاب کنید:**\n\n" +
+                          "1️⃣ نابودی ناوگان اصلی دشمن – تضعیف کنترل منطقه\n" +
+                          "2️⃣ عملیات آبی‌خاکی – تصرف سواحل و بنادر";
+            await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, text, replyMarkup: keyboard, cancellationToken: ct);
+        }
+        else
+        {
+            // Ground attack – shield and power ratio checks ()
+            var attacker = Database.GetCountry(uid, cid);
+            var defender = Database.GetCountry(tid, cid);
+            if (attacker != null && defender != null)
+            {
+                if (Database.IsAttackShieldActive(tid, cid))
+                {
+                    long until = Database.GetAttackShieldUntilMs(tid, cid);
+                    long leftH = Math.Max(1, (until - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) / 3600000);
+                    await bot.AnswerCallbackQueryAsync(cb.Id, $"🛡 {defender.Name} سپر 16 ساعته دارد! تا {leftH} ساعت دیگر قابل حمله نیست.", showAlert: true, cancellationToken: ct);
+                    return;
+                }
+                long attMP = CalcManpower(attacker);
+                long defMP = CalcManpower(defender);
+                if (defMP < attMP / 4)
+                {
+                    await bot.AnswerCallbackQueryAsync(cb.Id, "⛔ حمله به کشوری با قدرت کمتر از یک چهارم قدرت شما ممنوع است!", showAlert: true, cancellationToken: ct);
+                    return;
+                }
+            }
+            session.Step = SessionStep.AttackWaitingStrategy;
+            var def = Database.GetCountry(tid, cid);
+            var keyboard = new InlineKeyboardMarkup(new[]
+            {
+                new[] { InlineKeyboardButton.WithCallbackData("⚔️ هجوم منسجم", $"attack_strategy:{cid}:{tid}:1") },
+                new[] { InlineKeyboardButton.WithCallbackData("⭕ محاصره و ضربه", $"attack_strategy:{cid}:{tid}:2") }
+            });
+            string text = $"🎯 هدف: {def?.Name ?? "دشمن"}\n\n{GroundAttackStrategyGuide}";
+            await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, text, replyMarkup: keyboard, cancellationToken: ct);
+        }
+
+        TrackPrompt(uid, cb.Message.Chat.Id, cb.Message.MessageId);
+        await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
+    }
+
+    static async Task HandleAttackNavalStrategyCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length < 4 || cb.Message == null) return;
+        long uid = cb.From.Id;
+        if (!TryParseLong(parts[1], out long cid) || !TryParseLong(parts[2], out long tid) || !TryParseInt(parts[3], out int strategy)) return;
+        var session = sessions.GetOrAdd(uid, _ => new UserSession());
+        session.AttackChatId = cid;
+        session.AttackTargetId = tid;
+        session.AttackNavalStrategy = strategy;
+        session.Step = SessionStep.AttackWaitingTactic; // reuse for naval tactic
+
+        var keyboard = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData(
+                strategy == 1 ? "💥 حمله غافلگیرانه به پایگاه‌ها" : "💣 بمباران دریایی",
+                $"attack_naval_tactic:{cid}:{tid}:{strategy}:1") },
+            new[] { InlineKeyboardButton.WithCallbackData(
+                strategy == 1 ? "⚔️ کشاندن به نبرد تعیین‌کننده" : "🌊 پیاده‌سازی موجی نیروها",
+                $"attack_naval_tactic:{cid}:{tid}:{strategy}:2") }
+        });
+
+        string guide = strategy == 1 ?
+            "⚓ استراتژی: نابودی ناوگان اصلی دشمن\n\n1️⃣ حمله غافلگیرانه به پایگاه‌های دریایی – حمله در زمان استقرار در بندر\n2️⃣ کشاندن ناوگان به نبرد تعیین‌کننده – درگیری بزرگ به جای جنگ‌های پراکنده" :
+            "🌊 استراتژی: عملیات آبی‌خاکی\n\n1️⃣ بمباران دریایی – تضعیف مواضع قبل از پیاده‌سازی\n2️⃣ پیاده‌سازی موجی – ورود تدریجی برای ایجاد جای پا";
+
+        await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, guide, replyMarkup: keyboard, cancellationToken: ct);
+        TrackPrompt(uid, cb.Message.Chat.Id, cb.Message.MessageId);
+        await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
+    }
+
+    static async Task HandleAttackNavalTacticCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        if (parts.Length < 5 || cb.Message == null) return;
+        long uid = cb.From.Id;
+        if (!TryParseLong(parts[1], out long cid) || !TryParseLong(parts[2], out long tid) || !TryParseInt(parts[3], out int strat) || !TryParseInt(parts[4], out int tac)) return;
+
+        var session = sessions.GetOrAdd(uid, _ => new UserSession());
+        session.AttackChatId = cid;
+        session.AttackTargetId = tid;
+        session.AttackNavalStrategy = strat;
+        session.AttackNavalTactic = tac;
+
+        var attacker = Database.GetCountry(uid, cid);
+        if (attacker == null) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور مهاجم یافت نشد.", showAlert: true, cancellationToken: ct); return; }
+
+        // Now ask for naval forces per-model
+        var boatBreakdown = GetTransferBreakdown(attacker, "boats");
+        var subBreakdown = GetTransferBreakdown(attacker, "submarines");
+        var battleshipBreakdown = GetTransferBreakdown(attacker, "battleships");
+
+        // Combine all naval models into one list for asking?
+        var allNaval = new List<(string Model, long Count, string Category)>();
+        foreach (var b in boatBreakdown) allNaval.Add((b.ModelName, b.Count, "boats"));
+        foreach (var b in subBreakdown) allNaval.Add((b.ModelName, b.Count, "submarines"));
+        foreach (var b in battleshipBreakdown) allNaval.Add((b.ModelName, b.Count, "battleships"));
+
+        if (allNaval.Count == 0)
+        {
+            await bot.AnswerCallbackQueryAsync(cb.Id, "❌ نیروی دریایی ندارید!", showAlert: true, cancellationToken: ct);
+            return;
+        }
+
+        session.AttackModelNames = allNaval.Select(x => $"{x.Category}:{x.Model}").ToList();
+        session.AttackModelCounts = allNaval.Select(x => x.Count).ToList();
+        session.AttackModelAmounts = new List<long>(new long[allNaval.Count]);
+        session.AttackModelIndex = 0;
+        session.AttackCurrentCategory = "naval";
+        session.Step = SessionStep.AttackWaitingModelAmount; //  – naval uses dedicated step
+
+        string prompt = $"⚓ حمله دریایی – {allNaval.Count} مدل ناوگانی دارید\n🔧 مدل 1/{allNaval.Count}: {allNaval[0].Model} ({allNaval[0].Category}) – موجودی {allNaval[0].Count:N0}\nچند تا اعزام شود؟ (0 برای رد)";
+        await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, prompt, cancellationToken: ct);
+        TrackPrompt(uid, cb.Message.Chat.Id, cb.Message.MessageId);
+        await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
     }
 
     static async Task HandleAttackStrategyCallback(
@@ -5582,22 +8331,47 @@ partial class Program
 
         string forcePrompt;
 
-        if (attacker.Tanks <= 0)
+        //  – per-model attack for tanks
+        var tankBreakdown = GetTransferBreakdown(attacker, "tanks");
+        if (tankBreakdown.Count == 0)
         {
             session.AttackTanks = 0;
+            session.AttackModelNames = new List<string>();
+            session.AttackModelCounts = new List<long>();
+            session.AttackModelAmounts = new List<long>();
+            session.AttackModelIndex = 0;
+            session.AttackCurrentCategory = "tanks";
             session.Step = SessionStep.AttackWaitingSoldiers;
-
             forcePrompt =
                 "🪖 تعداد سربازان اعزامی را وارد کنید.\n" +
                 InventoryLine(attacker.Soldiers);
         }
+        else if (tankBreakdown.Count == 1)
+        {
+            // Single model – ask amount directly but track per-model
+            session.AttackModelNames = new List<string> { tankBreakdown[0].ModelName };
+            session.AttackModelCounts = new List<long> { tankBreakdown[0].Count };
+            session.AttackModelAmounts = new List<long> { 0 };
+            session.AttackModelIndex = 0;
+            session.AttackCurrentCategory = "tanks";
+            session.Step = SessionStep.AttackWaitingTankModel;
+            forcePrompt =
+                $"🛡 تعداد تانک‌های اعزامی – مدل {tankBreakdown[0].ModelName} را وارد کنید.\n" +
+                InventoryLine(tankBreakdown[0].Count);
+        }
         else
         {
-            session.Step = SessionStep.AttackWaitingTanks;
-
+            session.AttackModelNames = tankBreakdown.Select(x => x.ModelName).ToList();
+            session.AttackModelCounts = tankBreakdown.Select(x => x.Count).ToList();
+            session.AttackModelAmounts = new List<long>(new long[tankBreakdown.Count]);
+            session.AttackModelIndex = 0;
+            session.AttackCurrentCategory = "tanks";
+            session.Step = SessionStep.AttackWaitingTankModel;
             forcePrompt =
-                "🛡 تعداد تانک‌های اعزامی را وارد کنید.\n" +
-                InventoryLine(attacker.Tanks);
+                $"🛡 حمله – تانک‌ها – {tankBreakdown.Count} مدل دارید\n\n" +
+                $"🔧 مدل 1/{tankBreakdown.Count}: {tankBreakdown[0].ModelName}\n" +
+                $"📊 موجودی: {tankBreakdown[0].Count:N0}\n\n" +
+                $"چند عدد از این مدل اعزام شود؟ (0 برای رد شدن)";
         }
 
         await bot.EditMessageTextAsync(
@@ -5713,6 +8487,36 @@ partial class Program
         long aTnk = sess.AttackTanks; long aSol = sess.AttackSoldiers;
         long aFig = sess.AttackFighters; long aBom = sess.AttackBombers;
         int aAirStr = sess.AttackAirStrategy; int aAirTac = sess.AttackAirTactic;
+        // Per-model breakdowns from session ()
+        var attTankBreakdown = new List<(string Model, long Count)>();
+        for (int i = 0; i < sess.AttackTankModelNamesFinal.Count && i < sess.AttackTankModelAmountsFinal.Count; i++)
+        {
+            if (sess.AttackTankModelAmountsFinal[i] > 0)
+                attTankBreakdown.Add((sess.AttackTankModelNamesFinal[i], sess.AttackTankModelAmountsFinal[i]));
+        }
+        if (attTankBreakdown.Count == 0 && aTnk > 0)
+        {
+            // Fallback to generic from AttackModel if final not set
+            if (sess.AttackModelNames.Count > 0 && sess.AttackModelAmounts.Count == sess.AttackModelNames.Count)
+            {
+                for (int i = 0; i < sess.AttackModelNames.Count; i++)
+                    if (sess.AttackModelAmounts[i] > 0) attTankBreakdown.Add((sess.AttackModelNames[i], sess.AttackModelAmounts[i]));
+            }
+            if (attTankBreakdown.Count == 0) attTankBreakdown.Add((Database.GetDefaultTankModel(attacker?.Faction ?? Faction.USA), aTnk));
+        }
+
+        var attPlaneBreakdown = new List<(string Model, long Count)>();
+        for (int i = 0; i < sess.AttackPlaneModelNamesFinal.Count && i < sess.AttackPlaneModelAmountsFinal.Count; i++)
+            if (sess.AttackPlaneModelAmountsFinal[i] > 0) attPlaneBreakdown.Add((sess.AttackPlaneModelNamesFinal[i], sess.AttackPlaneModelAmountsFinal[i]));
+        if (attPlaneBreakdown.Count == 0 && aFig > 0)
+            attPlaneBreakdown.Add((Database.GetDefaultPlaneModel(attacker?.Faction ?? Faction.USA), aFig));
+
+        var attBomberBreakdown = new List<(string Model, long Count)>();
+        for (int i = 0; i < sess.AttackBomberModelNamesFinal.Count && i < sess.AttackBomberModelAmountsFinal.Count; i++)
+            if (sess.AttackBomberModelAmountsFinal[i] > 0) attBomberBreakdown.Add((sess.AttackBomberModelNamesFinal[i], sess.AttackBomberModelAmountsFinal[i]));
+        if (attBomberBreakdown.Count == 0 && aBom > 0)
+            attBomberBreakdown.Add((Database.GetDefaultBomberModel(attacker?.Faction ?? Faction.USA), aBom));
+
         EndSession(uid);
         if (attacker == null || defender == null) { await SendTemp(uid, "❌ کشور یافت نشد.", ct: ct); return; }
         if (lastAssetUpdateAt != DateTime.MinValue)
@@ -5738,8 +8542,91 @@ partial class Program
         Database.IncDailyDefendCount(defender.OwnerId, todayTehranInc);
         // FIX(1b): ثبت اینکه حمله‌کننده امروز حمله واقعی زده
         Database.SetAttackerFlag(uid, todayTehranInc);
+        //  – 5 attacks => 16h shield counting for ground too
+        Database.AddAttackShieldHit(defender.OwnerId, defender.ChatId);
+        if (Database.IsAttackShieldActive(defender.OwnerId, defender.ChatId))
+        {
+            long until = Database.GetAttackShieldUntilMs(defender.OwnerId, defender.ChatId);
+            string fmt = FormatTime(until);
+            try { await SendPermanent(cid, $"🛡 {defender.Name} به دلیل 5 حمله متوالی، به مدت 16 ساعت سپر گرفت! تا {fmt} قابل حمله نیست.", ct: ct); } catch { }
+        }
         await SendTemp(uid, "⚔️ در حال پردازش نبرد...", ct: ct);
-        var result = WarEngine.RunBattle(attacker, defender, aTnk, aSol, aFig, aBom, aStr, aTac, aAirStr, aAirTac);
+
+        //  – include defensive deployment forces (not in assets anymore)
+        var defDeployments = Database.GetActiveDeployments().Where(d => d.ChatId == cid && d.Type == "Defensive" && d.TargetUserId == defender.OwnerId).ToList();
+        long depTanks = defDeployments.Sum(d => d.Tanks);
+        long depSoldiers = defDeployments.Sum(d => d.Soldiers);
+        long depFighters = defDeployments.Sum(d => d.Fighters);
+        long depBombers = defDeployments.Sum(d => d.Bombers);
+
+        // Build defender breakdown including own defense + deployment forces
+        var defTankBreakdownOwn = GetDefenseBreakdown(defender, "tanks");
+        var defTankBreakdown = new List<(string Model, long Count)>();
+        foreach (var (model, count, pct) in defTankBreakdownOwn)
+        {
+            long defCount = (long)Math.Ceiling(count * pct / 100.0);
+            if (defCount > 0) defTankBreakdown.Add((model, defCount));
+        }
+        // Add deployment tanks grouped by faction default model
+        if (depTanks > 0)
+        {
+            // Group deployment contributors by faction for more accurate model preservation
+            var depContribs = new List<DeploymentContributor>();
+            foreach (var dd in defDeployments) depContribs.AddRange(Database.GetDeploymentContributors(dd.Id));
+            var groupedByFaction = depContribs.GroupBy(c =>
+            {
+                var cc = Database.GetCountry(c.UserId, cid);
+                return cc?.Faction ?? Faction.USA;
+            });
+            foreach (var g in groupedByFaction)
+            {
+                long gTanks = g.Sum(x => x.Tanks);
+                if (gTanks > 0)
+                {
+                    string model = Database.GetDefaultTankModel(g.Key);
+                    defTankBreakdown.Add((model + " (صف آرایی)", gTanks));
+                }
+            }
+            if (defTankBreakdown.Count == 0) defTankBreakdown.Add(("صف آرایی", depTanks));
+        }
+
+        var defPlaneBreakdownOwn = GetDefenseBreakdown(defender, "planes");
+        var defPlaneBreakdown = new List<(string Model, long Count)>();
+        foreach (var (model, count, pct) in defPlaneBreakdownOwn)
+        {
+            long defCount = (long)Math.Ceiling(count * pct / 100.0);
+            if (defCount > 0) defPlaneBreakdown.Add((model, defCount));
+        }
+        if (depFighters > 0)
+        {
+            var depContribs = new List<DeploymentContributor>();
+            foreach (var dd in defDeployments) depContribs.AddRange(Database.GetDeploymentContributors(dd.Id));
+            var groupedByFaction = depContribs.GroupBy(c =>
+            {
+                var cc = Database.GetCountry(c.UserId, cid);
+                return cc?.Faction ?? Faction.USA;
+            });
+            foreach (var g in groupedByFaction)
+            {
+                long gFighters = g.Sum(x => x.Fighters);
+                if (gFighters > 0)
+                {
+                    string model = Database.GetDefaultPlaneModel(g.Key);
+                    defPlaneBreakdown.Add((model + " (صف آرایی)", gFighters));
+                }
+            }
+        }
+
+        long defSoldiersEffective = defender.DefenseSoldiers + depSoldiers;
+
+        // Use advanced war engine with per-model breakdowns
+        var result = WarEngine.RunBattleAdvanced(
+            attacker, defender,
+            attTankBreakdown, aSol,
+            attPlaneBreakdown, attBomberBreakdown,
+            defTankBreakdown, defSoldiersEffective,
+            defPlaneBreakdown,
+            aStr, aTac, aAirStr, aAirTac);
         attacker.Tanks = Math.Max(0, attacker.Tanks - result.AttackerTanksLost);
         attacker.Soldiers = Math.Max(0, attacker.Soldiers - result.AttackerSoldiersLost);
         attacker.Planes = Math.Max(0, attacker.Planes - result.AttackerFightersLost);
@@ -5747,13 +8634,24 @@ partial class Program
         attacker.Money += result.AttackerMoneyGained;
         attacker.Iron += result.AttackerIronGained;
         attacker.Welfare += result.AttackerWelfareChange;
-        var defDep = Database.GetActiveDeployments().FirstOrDefault(d => d.ChatId == cid && d.Type == "Defensive" && d.TargetUserId == defender.OwnerId);
-        if (defDep != null)
+        // Apply losses to all defensive deployments (since they participated but not in assets)
+        var allDefDeps = Database.GetActiveDeployments().Where(d => d.ChatId == cid && d.Type == "Defensive" && d.TargetUserId == defender.OwnerId).ToList();
+        if (allDefDeps.Count > 0)
         {
-            if (defender.Tanks > 0 && defDep.Tanks > 0) defDep.Tanks = Math.Max(0, defDep.Tanks - (long)Math.Round((double)defDep.Tanks / defender.Tanks * result.DefenderTanksLost));
-            if (defender.Soldiers > 0 && defDep.Soldiers > 0) defDep.Soldiers = Math.Max(0, defDep.Soldiers - (long)Math.Round((double)defDep.Soldiers / defender.Soldiers * result.DefenderSoldiersLost));
-            if (defender.Planes > 0 && defDep.Fighters > 0) defDep.Fighters = Math.Max(0, defDep.Fighters - (long)Math.Round((double)defDep.Fighters / defender.Planes * result.DefenderFightersLost));
-            Database.UpdateDeploymentForces(defDep);
+            long totalEffTanks = defender.DefenseTanks + depTanks;
+            long totalEffSoldiers = defender.DefenseSoldiers + depSoldiers;
+            long totalEffFighters = defender.DefenseFighters + depFighters;
+
+            foreach (var dep in allDefDeps)
+            {
+                if (totalEffTanks > 0 && dep.Tanks > 0)
+                    dep.Tanks = Math.Max(0, dep.Tanks - (long)Math.Round((double)dep.Tanks / totalEffTanks * result.DefenderTanksLost));
+                if (totalEffSoldiers > 0 && dep.Soldiers > 0)
+                    dep.Soldiers = Math.Max(0, dep.Soldiers - (long)Math.Round((double)dep.Soldiers / totalEffSoldiers * result.DefenderSoldiersLost));
+                if (totalEffFighters > 0 && dep.Fighters > 0)
+                    dep.Fighters = Math.Max(0, dep.Fighters - (long)Math.Round((double)dep.Fighters / totalEffFighters * result.DefenderFightersLost));
+                Database.UpdateDeploymentForces(dep);
+            }
         }
         defender.Tanks = Math.Max(0, defender.Tanks - result.DefenderTanksLost);
         defender.Soldiers = Math.Max(0, defender.Soldiers - result.DefenderSoldiersLost);
@@ -5883,6 +8781,84 @@ partial class Program
                 country.AirDefTactic
             );
 
+        // per-model defense breakdown – including naval
+        var tankBreakdown = GetDefenseBreakdown(country, "tanks");
+        var planeBreakdown = GetDefenseBreakdown(country, "planes");
+        var boatBreakdown = GetDefenseBreakdown(country, "boats");
+        var subBreakdown = GetDefenseBreakdown(country, "submarines");
+        var bsBreakdown = GetDefenseBreakdown(country, "battleships");
+
+        var sbDef = new StringBuilder();
+        sbDef.AppendLine($"🛡 نیروهای مستقر در دفاع (جزئی per-model + دریایی):");
+        if (tankBreakdown.Count > 0)
+        {
+            sbDef.AppendLine("🛡 تانک‌ها:");
+            foreach (var (model, count, pct) in tankBreakdown)
+            {
+                long defCount = (long)Math.Ceiling(count * pct / 100.0);
+                sbDef.AppendLine($"  • {model}: {defCount:N0}/{count:N0} ({pct}%)");
+            }
+        }
+        else
+        {
+            sbDef.AppendLine($"🛡 تانک: {country.DefenseTanks:N0} | حداقل: {minimumTanks:N0}");
+        }
+        sbDef.AppendLine($"🪖 سرباز: {country.DefenseSoldiers:N0} | حداقل: {minimumSoldiers:N0}");
+        if (planeBreakdown.Count > 0)
+        {
+            sbDef.AppendLine("✈️ جنگنده‌ها:");
+            foreach (var (model, count, pct) in planeBreakdown)
+            {
+                long defCount = (long)Math.Ceiling(count * pct / 100.0);
+                sbDef.AppendLine($"  • {model}: {defCount:N0}/{count:N0} ({pct}%)");
+            }
+        }
+        else
+        {
+            sbDef.AppendLine($"✈️ جنگنده: {country.DefenseFighters:N0}");
+        }
+        sbDef.AppendLine($"🎯 پدافند: {country.AntiAir:N0}");
+
+        // Naval defense
+        if (boatBreakdown.Count > 0)
+        {
+            sbDef.AppendLine("🚤 قایق‌ها (دریایی):");
+            foreach (var (model, count, pct) in boatBreakdown)
+            {
+                long defCount = (long)Math.Ceiling(count * pct / 100.0);
+                sbDef.AppendLine($"  • {model}: {defCount:N0}/{count:N0} ({pct}%) | سوخت {country.BoatsFuel}%");
+            }
+        }
+        else
+        {
+            sbDef.AppendLine($"🚤 قایق: دفاع {country.DefenseBoats:N0} / کل {country.Boats:N0} | سوخت {country.BoatsFuel}%");
+        }
+        if (subBreakdown.Count > 0)
+        {
+            sbDef.AppendLine("⚓ زیردریایی‌ها:");
+            foreach (var (model, count, pct) in subBreakdown)
+            {
+                long defCount = (long)Math.Ceiling(count * pct / 100.0);
+                sbDef.AppendLine($"  • {model}: {defCount:N0}/{count:N0} ({pct}%)");
+            }
+        }
+        else
+        {
+            sbDef.AppendLine($"⚓ زیردریایی: دفاع {country.DefenseSubmarines:N0} / کل {country.Submarines:N0}");
+        }
+        if (bsBreakdown.Count > 0)
+        {
+            sbDef.AppendLine("🚢 نبردناوها:");
+            foreach (var (model, count, pct) in bsBreakdown)
+            {
+                sbDef.AppendLine($"  • {model}: {count:N0} عدد (آسیب کل {country.BattleshipDamage}% | در دریا {country.BattleshipsAtSea})");
+            }
+        }
+        else
+        {
+            sbDef.AppendLine($"🚢 نبردناو: {country.Battleships}/3 | آسیب {country.BattleshipDamage}% | در دریا {country.BattleshipsAtSea}");
+        }
+
         string text =
             $"🛡 وضعیت دفاع {country.Name}\n\n" +
 
@@ -5894,18 +8870,14 @@ partial class Program
             $"استراتژی: {airStrategy}\n" +
             $"تاکتیک: {airTactic}\n\n" +
 
-            "🛡 نیروهای مستقر در دفاع\n" +
-            $"تانک: {country.DefenseTanks:N0}" +
-            $" | حداقل: {minimumTanks:N0}\n" +
-            $"سرباز: {country.DefenseSoldiers:N0}" +
-            $" | حداقل: {minimumSoldiers:N0}\n" +
-            $"جنگنده: {country.DefenseFighters:N0}\n" +
-            $"پدافند: {country.AntiAir:N0}\n\n" +
+            "⚓ دفاع دریایی\n" +
+            $"بندر سطح: {country.PortLevel} | قایق سوخت: {country.BoatsFuel}% | نبردناو آسیب: {country.BattleshipDamage}%\n\n" +
+
+            sbDef.ToString() + "\n" +
 
             "📊 کل موجودی کشور\n" +
-            $"تانک: {country.Tanks:N0}\n" +
-            $"سرباز: {country.Soldiers:N0}\n" +
-            $"جنگنده: {country.Planes:N0}";
+            $"تانک: {country.Tanks:N0} | سرباز: {country.Soldiers:N0} | جنگنده: {country.Planes:N0}\n" +
+            $"قایق: {country.Boats:N0} (در دریا {country.BoatsAtSea}) | زیردریایی: {country.Submarines:N0} (در دریا {country.SubmarinesAtSea}) | نبردناو: {country.Battleships}/3 (در دریا {country.BattleshipsAtSea})";
 
         bool isPrivate = sendTo == ownerId;
 
@@ -5977,6 +8949,23 @@ partial class Program
         return new InlineKeyboardMarkup(rows);
     }
 
+    static InlineKeyboardMarkup BuildModelPercentKeyboard(long chatId, string category, int modelIndex)
+    {
+        var rows = new List<InlineKeyboardButton[]>();
+        for (int i = 0; i < DefensePercents.Length; i += 2)
+        {
+            var row = new List<InlineKeyboardButton>
+            {
+                InlineKeyboardButton.WithCallbackData($"{DefensePercents[i]}%", $"defense_model_pct:{chatId}:{category}:{modelIndex}:{DefensePercents[i]}")
+            };
+            if (i + 1 < DefensePercents.Length)
+                row.Add(InlineKeyboardButton.WithCallbackData($"{DefensePercents[i + 1]}%", $"defense_model_pct:{chatId}:{category}:{modelIndex}:{DefensePercents[i + 1]}"));
+            rows.Add(row.ToArray());
+        }
+        rows.Add(new[] { InlineKeyboardButton.WithCallbackData("❌ انصراف", "cancel") });
+        return new InlineKeyboardMarkup(rows);
+    }
+
     static async Task HandleDefenseSetCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
     {
         if (parts.Length < 2 || cb.Message == null) return;
@@ -5985,7 +8974,32 @@ partial class Program
         var c = Database.GetCountry(uid, cid);
         if (c == null) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور نیست!", cancellationToken: ct); return; }
         await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
-        await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, $"🛡 درصد تانک:\nکل: {c.Tanks}", replyMarkup: BuildPercentKeyboard("tank", cid), cancellationToken: ct);
+
+        //  – per-model defense: start with tank models
+        var tankBreakdown = GetDefenseBreakdown(c, "tanks");
+        if (tankBreakdown.Count == 0)
+        {
+            // No tanks, go to soldiers
+            await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, $"🪖 درصد سرباز:\nکل: {c.Soldiers:N0}", replyMarkup: BuildPercentKeyboard("soldier", cid), cancellationToken: ct);
+            sessions[uid] = new UserSession { Step = SessionStep.DefenseWaitingSoldiers, AttackChatId = cid, DefenseTanks = 0, DefTankPct = 100 };
+            return;
+        }
+
+        var sess = new UserSession
+        {
+            Step = SessionStep.DefenseWaitingTankModel,
+            AttackChatId = cid,
+            DefenseCurrentCategory = "tanks",
+            DefenseModelNames = tankBreakdown.Select(x => x.ModelName).ToList(),
+            DefenseModelCounts = tankBreakdown.Select(x => x.Count).ToList(),
+            DefenseModelPcts = tankBreakdown.Select(x => x.DefPct).ToList(),
+            DefenseModelIndex = 0
+        };
+        sessions[uid] = sess;
+
+        var first = tankBreakdown[0];
+        string msg = $"🛡 درصد دفاع تانک – مدل {1}/{tankBreakdown.Count}\n\n🔧 مدل: {first.ModelName}\n📊 موجودی: {first.Count:N0}\n📈 درصد فعلی: {first.DefPct}%\n\nچند درصد از این مدل در دفاع باشد؟ (حداقل 20%)";
+        await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, msg, replyMarkup: BuildModelPercentKeyboard(cid, "tanks", 0), cancellationToken: ct);
     }
 
     static async Task HandleDefensePctCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
@@ -6008,14 +9022,46 @@ partial class Program
         {
             long defT = c.DefenseTanks; int dtp = 100;
             if (sessions.TryGetValue(uid, out var s) && s != null && s.AttackChatId == cid) { defT = s.DefenseTanks; dtp = s.DefTankPct > 0 ? s.DefTankPct : 100; }
+
             long ds = (long)Math.Ceiling(c.Soldiers * (pct / 100.0));
-            sessions[uid] = new UserSession { Step = SessionStep.DefenseWaitingFighters, AttackChatId = cid, DefenseTanks = defT, DefenseSoldiers = ds, DefTankPct = dtp, DefSoldierPct = pct };
+            //  – after soldiers, go to per-model planes
+            var planeBreakdown = GetDefenseBreakdown(c, "planes");
+            if (planeBreakdown.Count == 0)
+            {
+                // No planes, finalize
+                Database.UpdateDefenseFull(uid, cid, defT, ds, 0, c.DefenseStrategy, c.DefenseTactic, dtp, pct, 100);
+                EndSession(uid);
+                await bot.AnswerCallbackQueryAsync(cb.Id, $"🪖 {pct}% – ذخیره شد.", cancellationToken: ct);
+                DeleteNow(cb.Message.Chat.Id, cb.Message.MessageId);
+                await SendDefenseStatus(uid, uid, cid, ct);
+                return;
+            }
+
+            var sessPlane = new UserSession
+            {
+                Step = SessionStep.DefenseWaitingPlaneModel,
+                AttackChatId = cid,
+                DefenseTanks = defT,
+                DefenseSoldiers = ds,
+                DefTankPct = dtp,
+                DefSoldierPct = pct,
+                DefenseCurrentCategory = "planes",
+                DefenseModelNames = planeBreakdown.Select(x => x.ModelName).ToList(),
+                DefenseModelCounts = planeBreakdown.Select(x => x.Count).ToList(),
+                DefenseModelPcts = planeBreakdown.Select(x => x.DefPct).ToList(),
+                DefenseModelIndex = 0
+            };
+            sessions[uid] = sessPlane;
+
             await bot.AnswerCallbackQueryAsync(cb.Id, $"🪖 {pct}%", cancellationToken: ct);
-            await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, $"✈️ درصد جنگنده:\nکل: {c.Planes}", replyMarkup: BuildPercentKeyboard("fighter", cid), cancellationToken: ct);
+            var firstPlane = planeBreakdown[0];
+            string msgPlane = $"✈️ درصد دفاع جنگنده – مدل {1}/{planeBreakdown.Count}\n\n🔧 مدل: {firstPlane.ModelName}\n📊 موجودی: {firstPlane.Count:N0}\n📈 فعلی: {firstPlane.DefPct}%\n\nچند درصد در دفاع باشد؟";
+            await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, msgPlane, replyMarkup: BuildModelPercentKeyboard(cid, "planes", 0), cancellationToken: ct);
             return;
         }
         if (kind == "fighter")
         {
+            // Legacy single fighter handling – kept for backward compat, now redirects to per-model if needed
             long defT = c.DefenseTanks, defS = c.DefenseSoldiers;
             int dtp = 100, dsp = 100;
             if (sessions.TryGetValue(uid, out var s) && s != null && s.AttackChatId == cid) { defT = s.DefenseTanks; defS = s.DefenseSoldiers; dtp = s.DefTankPct > 0 ? s.DefTankPct : 100; dsp = s.DefSoldierPct > 0 ? s.DefSoldierPct : 100; }
@@ -6028,6 +9074,176 @@ partial class Program
             return;
         }
         await bot.AnswerCallbackQueryAsync(cb.Id, cancellationToken: ct);
+    }
+
+    static async Task HandleDefenseModelPctCallback(CallbackQuery cb, string[] parts, CancellationToken ct)
+    {
+        // Callback: defense_model_pct:{chatId}:{category}:{modelIndex}:{pct}
+        if (parts.Length < 5 || cb.Message == null) return;
+        long uid = cb.From.Id;
+        if (!TryParseLong(parts[1], out long cid) || !TryParseInt(parts[3], out int modelIdx) || !TryParseInt(parts[4], out int pct)) return;
+        string category = parts[2]; // tanks or planes
+        pct = Math.Clamp(pct, 20, 100);
+
+        if (!sessions.TryGetValue(uid, out var sess) || sess == null) return;
+        var c = Database.GetCountry(uid, cid);
+        if (c == null) { await bot.AnswerCallbackQueryAsync(cb.Id, "❌ کشور نیست!", cancellationToken: ct); return; }
+
+        // Ensure session matches
+        if (sess.AttackChatId != cid && sess.AttackChatId != 0) { /* mismatch, but allow */ }
+
+        if (modelIdx < 0 || modelIdx >= sess.DefenseModelNames.Count)
+        {
+            await bot.AnswerCallbackQueryAsync(cb.Id, "❌ ایندکس نامعتبر", cancellationToken: ct);
+            return;
+        }
+
+        // Save pct for this model – now supports naval too
+        sess.DefenseModelPcts[modelIdx] = pct;
+        string modelName = sess.DefenseModelNames[modelIdx];
+        string dbCategory = category switch
+        {
+            "tanks" => "Tanks",
+            "planes" => "Planes",
+            "boats" => "Boats",
+            "submarines" => "Submarines",
+            "battleships" => "Battleships",
+            _ => "Tanks"
+        };
+        Database.SetDefenseModel(uid, cid, dbCategory, modelName, pct);
+
+        await bot.AnswerCallbackQueryAsync(cb.Id, $"✅ {modelName}: {pct}%", cancellationToken: ct);
+
+        // Move to next model in same category
+        sess.DefenseModelIndex = modelIdx + 1;
+        if (sess.DefenseModelIndex < sess.DefenseModelNames.Count)
+        {
+            var next = sess.DefenseModelNames[sess.DefenseModelIndex];
+            var nextCount = sess.DefenseModelCounts[sess.DefenseModelIndex];
+            var nextPct = sess.DefenseModelPcts[sess.DefenseModelIndex];
+            string msg = category switch
+            {
+                "tanks" => $"🛡 درصد دفاع تانک – مدل {sess.DefenseModelIndex + 1}/{sess.DefenseModelNames.Count}\n\n🔧 مدل: {next}\n📊 موجودی: {nextCount:N0}\n📈 فعلی: {nextPct}%\n\nچند درصد در دفاع باشد؟",
+                "planes" => $"✈️ درصد دفاع جنگنده – مدل {sess.DefenseModelIndex + 1}/{sess.DefenseModelNames.Count}\n\n🔧 مدل: {next}\n📊 موجودی: {nextCount:N0}\n📈 فعلی: {nextPct}%\n\nچند درصد در دفاع باشد؟",
+                "boats" => $"🚤 درصد دفاع قایق – مدل {sess.DefenseModelIndex + 1}/{sess.DefenseModelNames.Count}\n\n🔧 مدل: {next}\n📊 موجودی: {nextCount:N0}\n📈 فعلی: {nextPct}%\n\nچند درصد در دفاع باشد؟",
+                "submarines" => $"⚓ درصد دفاع زیردریایی – مدل {sess.DefenseModelIndex + 1}/{sess.DefenseModelNames.Count}\n\n🔧 مدل: {next}\n📊 موجودی: {nextCount:N0}\n📈 فعلی: {nextPct}%\n\nچند درصد در دفاع باشد؟",
+                _ => $"🛡 درصد دفاع {category} – مدل {sess.DefenseModelIndex + 1}/{sess.DefenseModelNames.Count}\n\n🔧 مدل: {next}\n📊 موجودی: {nextCount:N0}\n📈 فعلی: {nextPct}%\n\nچند درصد در دفاع باشد؟"
+            };
+            await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, msg, replyMarkup: BuildModelPercentKeyboard(cid, category, sess.DefenseModelIndex), cancellationToken: ct);
+            return;
+        }
+
+        // Finished current category
+        if (category == "tanks")
+        {
+            long totalDefTanks = 0;
+            for (int i = 0; i < sess.DefenseModelNames.Count; i++)
+                totalDefTanks += (long)Math.Ceiling(sess.DefenseModelCounts[i] * sess.DefenseModelPcts[i] / 100.0);
+            sess.DefenseTanks = totalDefTanks;
+            sess.DefTankPct = 100;
+            sess.Step = SessionStep.DefenseWaitingSoldiers;
+            string msg = $"🪖 درصد دفاع سرباز:\nکل: {c.Soldiers:N0}\n\nدرصد را انتخاب کنید:";
+            await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, msg, replyMarkup: BuildPercentKeyboard("soldier", cid), cancellationToken: ct);
+            return;
+        }
+        else if (category == "planes")
+        {
+            long totalDefPlanes = 0;
+            for (int i = 0; i < sess.DefenseModelNames.Count; i++)
+                totalDefPlanes += (long)Math.Ceiling(sess.DefenseModelCounts[i] * sess.DefenseModelPcts[i] / 100.0);
+            sess.DefenseTanks = sess.DefenseTanks; // keep
+            sess.DefenseSoldiers = sess.DefenseSoldiers;
+            // Store intermediate fighter count in session for later finalization, but continue to naval
+            sess.DefenseModelNames = new List<string>(); // will be reused for boats
+            sess.DefenseModelCounts = new List<long>();
+            sess.DefenseModelPcts = new List<int>();
+            // Go to boats
+            var boatBreakdown = GetDefenseBreakdown(c, "boats");
+            if (boatBreakdown.Count == 0)
+            {
+                // No boats, go to subs
+                var subBreakdown = GetDefenseBreakdown(c, "submarines");
+                if (subBreakdown.Count == 0)
+                {
+                    // No naval, finalize
+                    long defT = sess.DefenseTanks;
+                    long defS = sess.DefenseSoldiers;
+                    int dtp = sess.DefTankPct > 0 ? sess.DefTankPct : 100;
+                    int dsp = sess.DefSoldierPct > 0 ? sess.DefSoldierPct : 100;
+                    Database.UpdateDefenseFull(uid, cid, defT, defS, totalDefPlanes, c.DefenseStrategy, c.DefenseTactic, dtp, dsp, 100);
+                    Database.ReconcileDefense(uid, cid);
+                    EndSession(uid);
+                    DeleteNow(cb.Message.Chat.Id, cb.Message.MessageId);
+                    await SendDefenseStatus(uid, uid, cid, ct);
+                    return;
+                }
+                sess.DefenseCurrentCategory = "submarines";
+                sess.DefenseModelNames = subBreakdown.Select(x => x.ModelName).ToList();
+                sess.DefenseModelCounts = subBreakdown.Select(x => x.Count).ToList();
+                sess.DefenseModelPcts = subBreakdown.Select(x => x.DefPct).ToList();
+                sess.DefenseModelIndex = 0;
+                var firstSub = subBreakdown[0];
+                string msgSub = $"⚓ درصد دفاع زیردریایی – مدل 1/{subBreakdown.Count}\n\n🔧 مدل: {firstSub.ModelName}\n📊 موجودی: {firstSub.Count:N0}\n📈 فعلی: {firstSub.DefPct}%\n\nچند درصد در دفاع باشد؟";
+                await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, msgSub, replyMarkup: BuildModelPercentKeyboard(cid, "submarines", 0), cancellationToken: ct);
+                return;
+            }
+            // Boats exist
+            sess.DefenseCurrentCategory = "boats";
+            sess.DefenseModelNames = boatBreakdown.Select(x => x.ModelName).ToList();
+            sess.DefenseModelCounts = boatBreakdown.Select(x => x.Count).ToList();
+            sess.DefenseModelPcts = boatBreakdown.Select(x => x.DefPct).ToList();
+            sess.DefenseModelIndex = 0;
+            // Store plane total in a temp field (use DefenseFighters as temp)
+            sess.DefenseFighters = totalDefPlanes;
+            var firstBoat = boatBreakdown[0];
+            string msgBoat = $"🚤 درصد دفاع قایق – مدل 1/{boatBreakdown.Count}\n\n🔧 مدل: {firstBoat.ModelName}\n📊 موجودی: {firstBoat.Count:N0}\n📈 فعلی: {firstBoat.DefPct}%\n\nچند درصد در دفاع باشد؟";
+            await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, msgBoat, replyMarkup: BuildModelPercentKeyboard(cid, "boats", 0), cancellationToken: ct);
+            return;
+        }
+        else if (category == "boats")
+        {
+            // Boats finished, go to submarines
+            var subBreakdown = GetDefenseBreakdown(c, "submarines");
+            if (subBreakdown.Count == 0)
+            {
+                // Finalize with existing totals
+                long defT = sess.DefenseTanks;
+                long defS = sess.DefenseSoldiers;
+                long defF = sess.DefenseFighters; // plane total stored earlier
+                int dtp = sess.DefTankPct > 0 ? sess.DefTankPct : 100;
+                int dsp = sess.DefSoldierPct > 0 ? sess.DefSoldierPct : 100;
+                Database.UpdateDefenseFull(uid, cid, defT, defS, defF, c.DefenseStrategy, c.DefenseTactic, dtp, dsp, 100);
+                Database.ReconcileDefense(uid, cid);
+                EndSession(uid);
+                DeleteNow(cb.Message.Chat.Id, cb.Message.MessageId);
+                await SendDefenseStatus(uid, uid, cid, ct);
+                return;
+            }
+            sess.DefenseCurrentCategory = "submarines";
+            sess.DefenseModelNames = subBreakdown.Select(x => x.ModelName).ToList();
+            sess.DefenseModelCounts = subBreakdown.Select(x => x.Count).ToList();
+            sess.DefenseModelPcts = subBreakdown.Select(x => x.DefPct).ToList();
+            sess.DefenseModelIndex = 0;
+            var firstSub = subBreakdown[0];
+            string msgSub = $"⚓ درصد دفاع زیردریایی – مدل 1/{subBreakdown.Count}\n\n🔧 مدل: {firstSub.ModelName}\n📊 موجودی: {firstSub.Count:N0}\n📈 فعلی: {firstSub.DefPct}%\n\nچند درصد در دفاع باشد؟";
+            await bot.EditMessageTextAsync(cb.Message.Chat.Id, cb.Message.MessageId, msgSub, replyMarkup: BuildModelPercentKeyboard(cid, "submarines", 0), cancellationToken: ct);
+            return;
+        }
+        else if (category == "submarines")
+        {
+            // All naval finished, finalize
+            long defT = sess.DefenseTanks;
+            long defS = sess.DefenseSoldiers;
+            long defF = sess.DefenseFighters; // includes plane total
+            int dtp = sess.DefTankPct > 0 ? sess.DefTankPct : 100;
+            int dsp = sess.DefSoldierPct > 0 ? sess.DefSoldierPct : 100;
+            Database.UpdateDefenseFull(uid, cid, defT, defS, defF, c.DefenseStrategy, c.DefenseTactic, dtp, dsp, 100);
+            Database.ReconcileDefense(uid, cid);
+            EndSession(uid);
+            DeleteNow(cb.Message.Chat.Id, cb.Message.MessageId);
+            await SendDefenseStatus(uid, uid, cid, ct);
+            return;
+        }
     }
 
     static async Task HandleDefenseTacticCallback(
@@ -6446,9 +9662,25 @@ static partial class Database
 
             CREATE INDEX IF NOT EXISTS IX_AdminPendingActions_Expires
                 ON AdminPendingActions(ExpiresAtMs);
+
+            CREATE TABLE IF NOT EXISTS BannedUsers(
+                UserId INTEGER PRIMARY KEY,
+                Reason TEXT NOT NULL DEFAULT '',
+                BannedBy INTEGER NOT NULL DEFAULT 0,
+                BannedAtMs INTEGER NOT NULL
+            );
         ";
 
         cmd.ExecuteNonQuery();
+
+        // Extra migration for BannedUsers on old DBs
+        try
+        {
+            using var mig = con.CreateCommand();
+            mig.CommandText = "CREATE TABLE IF NOT EXISTS BannedUsers(UserId INTEGER PRIMARY KEY, Reason TEXT NOT NULL DEFAULT '', BannedBy INTEGER NOT NULL DEFAULT 0, BannedAtMs INTEGER NOT NULL);";
+            mig.ExecuteNonQuery();
+        }
+        catch { }
 
         long nowMs =
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -7206,6 +10438,126 @@ static partial class Database
             );
         }
     }
+
+    // ================= NEW ADMIN HELPERS =================
+    public static List<Country> GetCountriesByOwnerId(long ownerId)
+    {
+        var list = new List<Country>();
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = $"SELECT {COUNTRY_COLS} FROM Countries WHERE OwnerId=@oid";
+        cmd.Parameters.AddWithValue("@oid", ownerId);
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) list.Add(ReadCountry(r));
+        return list;
+    }
+
+    public static List<Country> SearchCountriesByName(string namePart, int limit = 20)
+    {
+        var list = new List<Country>();
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = $"SELECT {COUNTRY_COLS} FROM Countries WHERE Name LIKE @pat LIMIT @lim";
+        cmd.Parameters.AddWithValue("@pat", $"%{namePart}%");
+        cmd.Parameters.AddWithValue("@lim", limit);
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) list.Add(ReadCountry(r));
+        return list;
+    }
+
+    public static List<Country> GetSiegedCountries(int limit = 20)
+    {
+        var list = new List<Country>();
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = $"SELECT {COUNTRY_COLS} FROM Countries WHERE Besieged>0 ORDER BY Besieged DESC LIMIT @lim";
+        cmd.Parameters.AddWithValue("@lim", limit);
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) list.Add(ReadCountry(r));
+        return list;
+    }
+
+    public static void BanUser(long userId, string reason, long bannedBy)
+    {
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "INSERT OR REPLACE INTO BannedUsers(UserId, Reason, BannedBy, BannedAtMs) VALUES(@uid, @reason, @by, @ms)";
+        cmd.Parameters.AddWithValue("@uid", userId);
+        cmd.Parameters.AddWithValue("@reason", reason);
+        cmd.Parameters.AddWithValue("@by", bannedBy);
+        cmd.Parameters.AddWithValue("@ms", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        cmd.ExecuteNonQuery();
+
+        // Delete all countries of this user
+        using var del = con.CreateCommand();
+        del.CommandText = "DELETE FROM Countries WHERE OwnerId=@uid";
+        del.Parameters.AddWithValue("@uid", userId);
+        del.ExecuteNonQuery();
+    }
+
+    public static void UnbanUser(long userId)
+    {
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "DELETE FROM BannedUsers WHERE UserId=@uid";
+        cmd.Parameters.AddWithValue("@uid", userId);
+        cmd.ExecuteNonQuery();
+    }
+
+    public static bool IsUserBanned(long userId)
+    {
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM BannedUsers WHERE UserId=@uid LIMIT 1";
+        cmd.Parameters.AddWithValue("@uid", userId);
+        using var r = cmd.ExecuteReader();
+        return r.Read();
+    }
+
+    public static List<(long UserId, string Reason, long BannedBy, long BannedAtMs)> GetBannedUsers(int limit = 50)
+    {
+        var list = new List<(long, string, long, long)>();
+        using var con = OpenCon();
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "SELECT UserId, Reason, BannedBy, BannedAtMs FROM BannedUsers ORDER BY BannedAtMs DESC LIMIT @lim";
+        cmd.Parameters.AddWithValue("@lim", limit);
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            list.Add((r.GetInt64(0), r.GetString(1), r.GetInt64(2), r.GetInt64(3)));
+        }
+        return list;
+    }
+
+    public static List<(long Id, string Timestamp, long ChatId, long AttackerId, long DefenderId, string AttackerName, string DefenderName, string Winner, double Penetration, int SuccessPercent)> GetRecentBattles(int limit = 20)
+    {
+        var list = new List<(long, string, long, long, long, string, string, string, double, int)>();
+        try
+        {
+            using var con = OpenCon();
+            using var cmd = con.CreateCommand();
+            cmd.CommandText = "SELECT Id, Timestamp, ChatId, AttackerId, DefenderId, AttackerName, DefenderName, Winner, PenetrationKm, SuccessPercent FROM WarBattles ORDER BY Id DESC LIMIT @lim";
+            cmd.Parameters.AddWithValue("@lim", limit);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                list.Add((
+                    r.GetInt64(0),
+                    r.GetString(1),
+                    r.GetInt64(2),
+                    r.GetInt64(3),
+                    r.GetInt64(4),
+                    r.GetString(5),
+                    r.GetString(6),
+                    r.GetString(7),
+                    r.IsDBNull(8) ? 0 : r.GetDouble(8),
+                    r.IsDBNull(9) ? 0 : r.GetInt32(9)
+                ));
+            }
+        }
+        catch { }
+        return list;
+    }
 }
 
 // ===== MERGED ADMIN PANEL =====
@@ -7213,6 +10565,9 @@ sealed class AdminInputRequest
 {
     public string Kind { get; set; } = "";
     public long ExpiresAtMs { get; set; }
+    public long TargetId { get; set; } = 0;
+    public long ChatId { get; set; } = 0;
+    public string Extra { get; set; } = "";
 }
 
 partial class Program
@@ -7349,37 +10704,72 @@ partial class Program
 
         string text = message.Text?.Trim() ?? "";
 
-        if (adminInputRequests.TryGetValue(
-                userId,
-                out var request))
+        if (adminInputRequests.TryGetValue(userId, out var request))
         {
-            long nowMs =
-                DateTimeOffset.UtcNow
-                    .ToUnixTimeMilliseconds();
-
+            long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             if (request.ExpiresAtMs <= nowMs)
             {
-                adminInputRequests.TryRemove(
-                    userId,
-                    out _
-                );
-
-                await SendPermanent(
-                    userId,
-                    "⌛ زمان عملیات مدیریتی تمام شد.",
-                    ct: ct
-                );
-            }
-            else if (request.Kind == "add_admin")
-            {
-                await HandleAdminAddInput(
-                    userId,
-                    text,
-                    ct
-                );
-
+                adminInputRequests.TryRemove(userId, out _);
+                await SendPermanent(userId, "⌛ زمان عملیات مدیریتی تمام شد.", ct: ct);
                 return true;
             }
+
+            // Dispatch by Kind
+            switch (request.Kind)
+            {
+                case "add_admin":
+                    await HandleAdminAddInput(userId, text, ct);
+                    return true;
+                case "search_player":
+                    await HandleAdminSearchPlayerInput(userId, text, ct);
+                    return true;
+                case "search_country":
+                    await HandleAdminSearchCountryInput(userId, text, ct);
+                    return true;
+                case "search_group":
+                    await HandleAdminSearchGroupInput(userId, text, ct);
+                    return true;
+                case "edit_country_money":
+                case "edit_country_iron":
+                case "edit_country_pop":
+                case "edit_country_soldiers":
+                case "edit_country_tanks":
+                case "edit_country_planes":
+                case "edit_country_bombers":
+                case "edit_country_antiair":
+                    await HandleAdminEditCountryInput(userId, text, request, ct);
+                    return true;
+                case "ban_reason":
+                    await HandleAdminBanReasonInput(userId, text, request, ct);
+                    return true;
+                case "royal_add":
+                case "royal_deduct":
+                    await HandleAdminRoyalInput(userId, text, request, ct);
+                    return true;
+                case "set_leaderboard_channel":
+                    await HandleAdminSetLeaderboardChannelInput(userId, message, text, ct);
+                    return true;
+                case "announce_text":
+                case "announce_scope":
+                    await HandleAdminAnnounceTextInput(userId, message, text, request, ct);
+                    return true;
+                case "set_attack_lock":
+                case "set_shield_hours":
+                case "set_max_attacks":
+                case "set_max_transfers":
+                    await HandleAdminSettingsInput(userId, text, request, ct);
+                    return true;
+                case "awaiting_db_file":
+                    await HandleAdminDbUpload(userId, message, text, ct);
+                    return true;
+            }
+        }
+
+        // Handle forwarded channel message for leaderboard channel setting
+        if (message.ForwardFromChat != null && adminInputRequests.TryGetValue(userId, out var fwdReq) && fwdReq.Kind == "set_leaderboard_channel")
+        {
+            await HandleAdminSetLeaderboardChannelInput(userId, message, text, ct);
+            return true;
         }
 
         switch (text)
@@ -7401,7 +10791,6 @@ partial class Program
                     await SendAdminDenied(userId, ct);
                     return true;
                 }
-
                 await SendAdminList(userId, 0, ct);
                 return true;
 
@@ -7410,103 +10799,400 @@ partial class Program
                 return true;
 
             case "🔎 جستجوی پلیر":
-                await SendAdminModulePending(
-                    userId,
-                    "جستجوی پلیر",
-                    "P_VIEW",
-                    ct
-                );
+                await SendAdminPlayersHome(userId, ct);
                 return true;
 
             case "🌍 مدیریت کشور":
-                await SendAdminModulePending(
-                    userId,
-                    "مدیریت کشور",
-                    "C_VIEW",
-                    ct
-                );
+                await SendAdminCountriesHome(userId, ct);
                 return true;
 
             case "👥 مدیریت گروه":
-                await SendAdminModulePending(
-                    userId,
-                    "مدیریت گروه",
-                    "G_VIEW",
-                    ct
-                );
+                await SendAdminGroupsHome(userId, ct);
                 return true;
 
             case "🤝 مدیریت اتحاد":
-                await SendAdminModulePending(
-                    userId,
-                    "مدیریت اتحاد",
-                    "ALLY",
-                    ct
-                );
+                await SendAdminAlliancesHome(userId, ct);
                 return true;
 
             case "💎 اقتصاد و رویال":
-                await SendAdminModulePending(
-                    userId,
-                    "اقتصاد و رویال",
-                    "ROYAL",
-                    ct
-                );
+                await SendAdminEconomyHome(userId, ct);
                 return true;
 
             case "📢 اعلامیه":
-                await SendAdminModulePending(
-                    userId,
-                    "اعلامیه",
-                    "ANN",
-                    ct
-                );
+                await SendAdminAnnounceHome(userId, ct);
                 return true;
 
             case "⚔️ جنگ و عملیات":
-                await SendAdminModulePending(
-                    userId,
-                    "جنگ و عملیات",
-                    "W_VIEW",
-                    ct
-                );
+                await SendAdminWarHome(userId, ct);
                 return true;
 
             case "🗄 نگهداری":
-                await SendAdminModulePending(
-                    userId,
-                    "نگهداری",
-                    "BACKUP",
-                    ct
-                );
+                await SendAdminMaintenanceHome(userId, ct);
                 return true;
 
             case "⚙️ تنظیمات":
-                await SendAdminModulePending(
-                    userId,
-                    "تنظیمات",
-                    "SET",
-                    ct
-                );
+                await SendAdminSettingsHome(userId, ct);
                 return true;
 
             case "❌ بستن پنل":
-                adminInputRequests.TryRemove(
-                    userId,
-                    out _
-                );
-
-                await SendPermanent(
-                    userId,
-                    "✅ پنل مدیریت بسته شد.",
-                    markup: new ReplyKeyboardRemove(),
-                    ct: ct
-                );
-
+                adminInputRequests.TryRemove(userId, out _);
+                await SendPermanent(userId, "✅ پنل مدیریت بسته شد.", markup: new ReplyKeyboardRemove(), ct: ct);
                 return true;
         }
 
         return false;
+    }
+
+    static async Task HandleAdminSearchPlayerInput(long adminId, string text, CancellationToken ct)
+    {
+        if (text is "لغو" or "cancel" or "انصراف")
+        {
+            adminInputRequests.TryRemove(adminId, out _);
+            await SendAdminPlayersHome(adminId, ct);
+            return;
+        }
+        if (!TryParseLong(text, out long targetId) || targetId <= 0)
+        {
+            await SendPermanent(adminId, "❌ آیدی نامعتبر است. لطفاً آیدی عددی پلیر را وارد کنید.\nبرای لغو بنویسید: لغو", ct: ct);
+            return;
+        }
+        adminInputRequests.TryRemove(adminId, out _);
+        await SendAdminPlayerDetail(adminId, targetId, ct);
+    }
+
+    static async Task HandleAdminSearchCountryInput(long adminId, string text, CancellationToken ct)
+    {
+        if (text is "لغو" or "cancel" or "انصراف")
+        {
+            adminInputRequests.TryRemove(adminId, out _);
+            await SendAdminCountriesHome(adminId, ct);
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(text) || text.Length < 2)
+        {
+            await SendPermanent(adminId, "❌ نام کشور باید حداقل ۲ حرف باشد.\nبرای لغو: لغو", ct: ct);
+            return;
+        }
+        var results = Database.SearchCountriesByName(text.Trim(), 15);
+        adminInputRequests.TryRemove(adminId, out _);
+        if (results.Count == 0)
+        {
+            await SendPermanent(adminId, $"❌ کشوری با نام «{text}» یافت نشد.", ct: ct);
+            return;
+        }
+        var screen = BuildAdminCountrySearchResults(results, text);
+        await SendPermanent(adminId, screen.Text, markup: screen.Keyboard, ct: ct);
+    }
+
+    static async Task HandleAdminSearchGroupInput(long adminId, string text, CancellationToken ct)
+    {
+        if (text is "لغو" or "cancel" or "انصراف")
+        {
+            adminInputRequests.TryRemove(adminId, out _);
+            await SendAdminGroupsHome(adminId, ct);
+            return;
+        }
+        if (!TryParseLong(text, out long chatId))
+        {
+            await SendPermanent(adminId, "❌ آیدی گروه نامعتبر. آیدی عددی (مثلاً -100123...) وارد کنید.\nلغو: لغو", ct: ct);
+            return;
+        }
+        adminInputRequests.TryRemove(adminId, out _);
+        await SendAdminGroupDetail(adminId, chatId, ct);
+    }
+
+    static async Task HandleAdminEditCountryInput(long adminId, string text, AdminInputRequest req, CancellationToken ct)
+    {
+        if (text is "لغو" or "cancel" or "انصراف")
+        {
+            adminInputRequests.TryRemove(adminId, out _);
+            await SendAdminCountryDetail(adminId, req.TargetId, req.ChatId, ct);
+            return;
+        }
+        if (!TryParseLong(text, out long newVal))
+        {
+            await SendPermanent(adminId, "❌ عدد نامعتبر. لطفاً عدد وارد کنید.\nلغو: لغو", ct: ct);
+            return;
+        }
+        if (newVal < 0) newVal = 0;
+        var country = Database.GetCountry(req.TargetId, req.ChatId);
+        if (country == null)
+        {
+            adminInputRequests.TryRemove(adminId, out _);
+            await SendPermanent(adminId, "❌ کشور یافت نشد.", ct: ct);
+            return;
+        }
+
+        switch (req.Kind)
+        {
+            case "edit_country_money": country.Money = newVal; break;
+            case "edit_country_iron": country.Iron = newVal; break;
+            case "edit_country_pop": country.Population = Math.Max(1000, newVal); break;
+            case "edit_country_soldiers": country.Soldiers = newVal; break;
+            case "edit_country_tanks": country.Tanks = newVal; break;
+            case "edit_country_planes": country.Planes = newVal; break;
+            case "edit_country_bombers": country.Bombers = newVal; break;
+            case "edit_country_antiair": country.AntiAir = newVal; break;
+        }
+        Database.UpdateCountryFull(country);
+        Database.ReconcileDefense(country.OwnerId, country.ChatId);
+        Database.WriteAdminAudit(adminId, "COUNTRY_EDIT", "Country", $"{req.TargetId}:{req.ChatId}", $"{req.Kind}={newVal}", true);
+        adminInputRequests.TryRemove(adminId, out _);
+        await SendPermanent(adminId, $"✅ مقدار جدید ذخیره شد: {newVal:N0}", ct: ct);
+        await SendAdminCountryDetail(adminId, req.TargetId, req.ChatId, ct);
+    }
+
+    static async Task HandleAdminBanReasonInput(long adminId, string text, AdminInputRequest req, CancellationToken ct)
+    {
+        if (text is "لغو" or "cancel" or "انصراف")
+        {
+            adminInputRequests.TryRemove(adminId, out _);
+            await SendAdminPlayerDetail(adminId, req.TargetId, ct);
+            return;
+        }
+        string reason = text.Trim();
+        if (reason.Length > 200) reason = reason[..200];
+        Database.BanUser(req.TargetId, reason, adminId);
+        Database.WriteAdminAudit(adminId, "PLAYER_BAN", "Player", req.TargetId.ToString(), reason, true);
+        adminInputRequests.TryRemove(adminId, out _);
+        await SendPermanent(adminId, $"✅ پلیر {req.TargetId} بن شد.\nدلیل: {reason}\nتمام کشورها حذف شد.", ct: ct);
+    }
+
+    static async Task HandleAdminRoyalInput(long adminId, string text, AdminInputRequest req, CancellationToken ct)
+    {
+        if (text is "لغو" or "cancel" or "انصراف")
+        {
+            adminInputRequests.TryRemove(adminId, out _);
+            await SendAdminEconomyHome(adminId, ct);
+            return;
+        }
+
+        long targetId = req.TargetId;
+        long amount = 0;
+
+        // Support "id amount" in one line when target not set
+        if (targetId == 0)
+        {
+            var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2 && TryParseLong(parts[0], out long tid) && TryParseLong(parts[1], out long amt) && tid > 0 && amt > 0)
+            {
+                targetId = tid;
+                amount = amt;
+            }
+            else if (!TryParseLong(text, out amount) || amount <= 0)
+            {
+                await SendPermanent(adminId, "❌ فرمت نامعتبر.\nبرای واریز بدون انتخاب قبلی: «آیدی مقدار» مثل 123456 100\nیا فقط مقدار اگر پلیر قبلاً انتخاب شده.\nلغو: لغو", ct: ct);
+                return;
+            }
+            else
+            {
+                await SendPermanent(adminId, "❌ برای این حالت ابتدا آیدی و مقدار را با هم وارد کنید مثل: 123456 100\nلغو: لغو", ct: ct);
+                return;
+            }
+        }
+        else
+        {
+            if (!TryParseLong(text, out amount) || amount <= 0)
+            {
+                await SendPermanent(adminId, "❌ مقدار نامعتبر. عدد مثبت وارد کنید.\nلغو: لغو", ct: ct);
+                return;
+            }
+        }
+        if (req.Kind == "royal_add")
+        {
+            Database.AddRoyalCoins(targetId, amount);
+            Database.WriteAdminAudit(adminId, "ROYAL_ADD", "Player", targetId.ToString(), $"+{amount}", true);
+            await SendPermanent(adminId, $"✅ {amount:N0} رویال به {targetId} اضافه شد.\nموجودی جدید: {Database.GetRoyalCoins(targetId):N0}", ct: ct);
+            try { await SendPermanent(targetId, $"💎 {amount:N0} رویال کوین به حساب شما واریز شد!", ct: ct); } catch { }
+        }
+        else
+        {
+            Database.AddRoyalCoins(targetId, -amount);
+            Database.WriteAdminAudit(adminId, "ROYAL_DEDUCT", "Player", targetId.ToString(), $"-{amount}", true);
+            await SendPermanent(adminId, $"✅ {amount:N0} رویال از {targetId} کسر شد.\nموجودی جدید: {Database.GetRoyalCoins(targetId):N0}", ct: ct);
+            try { await SendPermanent(targetId, $"💎 {amount:N0} رویال کوین از حساب شما کسر شد.", ct: ct); } catch { }
+        }
+        adminInputRequests.TryRemove(adminId, out _);
+    }
+
+    static async Task HandleAdminSetLeaderboardChannelInput(long adminId, Message message, string text, CancellationToken ct)
+    {
+        if (text is "لغو" or "cancel" or "انصراف" or "0")
+        {
+            if (text == "0")
+            {
+                Database.SetSetting("LeaderboardChannelId", "0");
+                adminInputRequests.TryRemove(adminId, out _);
+                await SendPermanent(adminId, "✅ کانال لیدربورد حذف شد. فقط برای ادمین ارسال می‌شود.", ct: ct);
+                await SendAdminSettingsHome(adminId, ct);
+                return;
+            }
+            adminInputRequests.TryRemove(adminId, out _);
+            await SendAdminSettingsHome(adminId, ct);
+            return;
+        }
+
+        long channelId = 0;
+        // Try forwarded chat
+        if (message.ForwardFromChat != null)
+        {
+            channelId = message.ForwardFromChat.Id;
+        }
+        else if (TryParseLong(text, out long parsed))
+        {
+            channelId = parsed;
+        }
+        else if (text.StartsWith("@"))
+        {
+            // Try resolve username to chat id via GetChatAsync
+            try
+            {
+                var ch = await bot.GetChatAsync(text, ct);
+                channelId = ch.Id;
+            }
+            catch { }
+        }
+
+        if (channelId == 0)
+        {
+            await SendPermanent(adminId, "❌ فرمت نامعتبر.\nآیدی عددی کانال (مثلاً -100123...) یا @username یا فورواردی از کانال ارسال کنید.\nبرای حذف کانال 0 بنویسید.\nلغو: لغو", ct: ct);
+            return;
+        }
+
+        // Test bot is admin in channel
+        try
+        {
+            var me = await bot.GetChatMemberAsync(channelId, bot.BotId ?? OWNER_ID, ct);
+            if (me.Status is not (ChatMemberStatus.Administrator or ChatMemberStatus.Creator))
+            {
+                await SendPermanent(adminId, "⚠️ ربات در کانال ادمین نیست! لطفاً ربات را ادمین کانال کنید و دوباره تلاش کنید.", ct: ct);
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[LB CHANNEL CHECK ERR] {ex.Message}");
+            // still allow setting, but warn
+        }
+
+        Database.SetSetting("LeaderboardChannelId", channelId.ToString());
+        Database.WriteAdminAudit(adminId, "SET_LB_CHANNEL", "Settings", channelId.ToString(), "", true);
+        adminInputRequests.TryRemove(adminId, out _);
+        await SendPermanent(adminId, $"✅ کانال لیدربورد تنظیم شد: {channelId}\n\nهر شب ساعت 22:00 (تهران) لیدربوردها به این کانال و به پیوی شما ارسال می‌شود.", ct: ct);
+
+        // Send test leaderboards
+        try { await SendNightlyLeaderboards(ct); } catch { }
+
+        await SendAdminSettingsHome(adminId, ct);
+    }
+
+    static async Task HandleAdminAnnounceTextInput(long adminId, Message message, string text, AdminInputRequest req, CancellationToken ct)
+    {
+        if (text is "لغو" or "cancel" or "انصراف")
+        {
+            adminInputRequests.TryRemove(adminId, out _);
+            await SendAdminAnnounceHome(adminId, ct);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(text) && message.Photo == null && message.Document == null)
+        {
+            await SendPermanent(adminId, "❌ لطفاً متن اعلامیه را وارد کنید.\nلغو: لغو", ct: ct);
+            return;
+        }
+
+        // Save announce and ask scope
+        string payload = text;
+        if (message.Photo != null && message.Photo.Length > 0)
+            payload = message.Photo.Last().FileId + "|PHOTO|" + text;
+        else if (message.Document != null)
+            payload = message.Document.FileId + "|DOC|" + text;
+
+        req.Extra = payload;
+        req.Kind = "announce_scope"; // next step
+        adminInputRequests[adminId] = req;
+
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("👥 همه گروه‌ها", "adm:ann:groups"), InlineKeyboardButton.WithCallbackData("👤 همه پیوی‌ها", "adm:ann:private") },
+            new[] { InlineKeyboardButton.WithCallbackData("🌐 همه (گروه+پیوی)", "adm:ann:all"), InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:ann:cancel") }
+        });
+
+        await SendPermanent(adminId, "📢 متن دریافت شد. مقصد را انتخاب کنید:", markup: kb, ct: ct);
+    }
+
+    static async Task HandleAdminSettingsInput(long adminId, string text, AdminInputRequest req, CancellationToken ct)
+    {
+        if (text is "لغو" or "cancel" or "انصراف")
+        {
+            adminInputRequests.TryRemove(adminId, out _);
+            await SendAdminSettingsHome(adminId, ct);
+            return;
+        }
+        if (!TryParseInt(text, out int val) || val < 0)
+        {
+            await SendPermanent(adminId, "❌ عدد نامعتبر.\nلغو: لغو", ct: ct);
+            return;
+        }
+
+        switch (req.Kind)
+        {
+            case "set_attack_lock":
+                ATTACK_LOCK_MINUTES = Math.Clamp(val, 0, 1440);
+                Database.SetSetting("AttackLockMinutes", ATTACK_LOCK_MINUTES.ToString());
+                break;
+            case "set_shield_hours":
+                SHIELD_HOURS = Math.Clamp(val, 0, 720);
+                Database.SetSetting("ShieldHours", SHIELD_HOURS.ToString());
+                break;
+            case "set_max_attacks":
+                MAX_ATTACKS_PER_UPDATE = Math.Clamp(val, 1, 100);
+                Database.SetSetting("MaxAttacks", MAX_ATTACKS_PER_UPDATE.ToString());
+                break;
+            case "set_max_transfers":
+                MAX_TRANSFERS_PER_UPDATE = Math.Clamp(val, 1, 100);
+                Database.SetSetting("MaxTransfers", MAX_TRANSFERS_PER_UPDATE.ToString());
+                break;
+        }
+        Database.WriteAdminAudit(adminId, "SETTINGS_EDIT", "Settings", req.Kind, val.ToString(), true);
+        adminInputRequests.TryRemove(adminId, out _);
+        await SendPermanent(adminId, $"✅ تنظیم شد: {val}", ct: ct);
+        await SendAdminSettingsHome(adminId, ct);
+    }
+
+    static async Task HandleAdminDbUpload(long adminId, Message message, string text, CancellationToken ct)
+    {
+        if (text is "لغو" or "cancel" or "انصراف")
+        {
+            adminInputRequests.TryRemove(adminId, out _);
+            await SendAdminMaintenanceHome(adminId, ct);
+            return;
+        }
+        if (message.Document == null)
+        {
+            await SendPermanent(adminId, "❌ لطفاً فایل دیتابیس را ارسال کنید.\nلغو: لغو", ct: ct);
+            return;
+        }
+        try
+        {
+            var file = await bot.GetFileAsync(message.Document.FileId, cancellationToken: ct);
+            using (var stream = System.IO.File.OpenWrite("gamedata.db.tmp"))
+                await bot.DownloadFileAsync(file.FilePath!, stream, cancellationToken: ct);
+
+            // Replace
+            System.IO.File.Move("gamedata.db.tmp", "gamedata.db", true);
+            Database.WriteAdminAudit(adminId, "RESTORE_DB", "Maintenance", "", "", true);
+            adminInputRequests.TryRemove(adminId, out _);
+            await SendPermanent(adminId, "✅ دیتابیس جدید جایگزین شد و ربات ریستارت می‌شود.", ct: ct);
+            // Re-init
+            Database.Init();
+            Database.InitActivity();
+            Database.InitAdminPanel(OWNER_ID);
+        }
+        catch (Exception ex)
+        {
+            await SendPermanent(adminId, $"❌ خطا در آپلود: {ex.Message}", ct: ct);
+        }
     }
 
     static async Task HandleAdminAddInput(
@@ -7764,7 +11450,7 @@ partial class Program
             buttons.Add(
                 InlineKeyboardButton.WithCallbackData(
                     "🗄 نگهداری",
-                    "adm:todo:maintenance"
+                    "adm:maintenance:home"
                 )
             );
         }
@@ -7816,10 +11502,26 @@ partial class Program
         if (!CanAdmin(userId, permission))
             return;
 
+        // Creative mapping: direct home callback for each module
+        string callback = module switch
+        {
+            "players" => "adm:players:home",
+            "countries" => "adm:countries:home",
+            "groups" => "adm:groups:home",
+            "alliances" => "adm:alliances:home",
+            "economy" => "adm:economy:home",
+            "war" => "adm:war:home",
+            "operations" => "adm:ops:home",
+            "announce" => "adm:ann:home",
+            "settings" => "adm:settings:home",
+            "maintenance" => "adm:backup:get",
+            _ => $"adm:todo:{module}"
+        };
+
         buttons.Add(
             InlineKeyboardButton.WithCallbackData(
                 title,
-                $"adm:todo:{module}"
+                callback
             )
         );
     }
@@ -8421,6 +12123,519 @@ partial class Program
         });
 
         return (text.ToString(), keyboard);
+    }
+
+    // ================= CREATIVE ADMIN MODULES –  =================
+    static async Task SendAdminPlayersHome(long adminId, CancellationToken ct)
+    {
+        if (!CanAdmin(adminId, "P_VIEW"))
+        {
+            await SendAdminDenied(adminId, ct);
+            return;
+        }
+        var screen = await BuildAdminPlayersHome(ct);
+        await SendPermanent(adminId, screen.Text, markup: screen.Keyboard, ct: ct);
+    }
+
+    static async Task<(string Text, InlineKeyboardMarkup Keyboard)> BuildAdminPlayersHome(CancellationToken ct = default)
+    {
+        var all = Database.GetAllCountries();
+        var top = all.Select(c => new { Country = c, MP = CalcManpower(c) })
+                     .OrderByDescending(x => x.MP)
+                     .Take(8)
+                     .ToList();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("🔎 **مدیریت پلیرها** 🔎");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine($"👥 کل پلیرها: {all.Select(c => c.OwnerId).Distinct().Count():N0}");
+        sb.AppendLine($"🌍 کل کشورها: {all.Count:N0}");
+        sb.AppendLine();
+        sb.AppendLine("🏆 تاپ پلیرها (مان‌پاور):");
+        for (int i = 0; i < top.Count; i++)
+        {
+            sb.AppendLine($"{i + 1}. {top[i].Country.OwnerName} – {top[i].Country.Name} – {FormatManpowerK(top[i].MP)}");
+        }
+        sb.AppendLine();
+        sb.AppendLine("برای دیدن جزئیات پلیر، آیدی عددی را وارد کنید یا از دکمه‌ها استفاده کنید.");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("🔍 جستجو با آیدی", "adm:players:search"), InlineKeyboardButton.WithCallbackData("🚫 بن لیست", "adm:players:banned") },
+            new[] { InlineKeyboardButton.WithCallbackData("🏆 تاپ 10 مان‌پاور", "adm:lb:topplayers"), InlineKeyboardButton.WithCallbackData("🔄 تازه‌سازی", "adm:players:home") },
+            new[] { InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") }
+        });
+
+        return (sb.ToString(), kb);
+    }
+
+    static async Task SendAdminPlayerDetail(long adminId, long targetId, CancellationToken ct)
+    {
+        if (!CanAdmin(adminId, "P_VIEW"))
+        {
+            await SendAdminDenied(adminId, ct);
+            return;
+        }
+        var screen = BuildAdminPlayerDetail(targetId);
+        await SendPermanent(adminId, screen.Text, markup: screen.Keyboard, ct: ct);
+    }
+
+    static (string Text, InlineKeyboardMarkup Keyboard) BuildAdminPlayerDetail(long targetId)
+    {
+        var countries = Database.GetCountriesByOwnerId(targetId);
+        long totalMP = countries.Sum(c => CalcManpower(c));
+        long royal = Database.GetRoyalCoins(targetId);
+        bool isBanned = Database.IsUserBanned(targetId);
+        var sb = new StringBuilder();
+        sb.AppendLine($"👤 **پروفایل پلیر {targetId}**");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine($"🔰 وضعیت: {(isBanned ? "🚫 بن شده" : "✅ فعال")}");
+        sb.AppendLine($"💎 رویال: {royal:N0}");
+        sb.AppendLine($"🌍 تعداد کشور: {countries.Count}");
+        sb.AppendLine($"⚡ مجموع مان‌پاور: {FormatManpowerK(totalMP)}");
+        sb.AppendLine();
+        if (countries.Count > 0)
+        {
+            sb.AppendLine("🏳️ کشورها:");
+            foreach (var c in countries.Take(10))
+            {
+                sb.AppendLine($"• {c.Name} در {c.ChatId} – {FormatManpowerK(CalcManpower(c))} – {c.Cities} شهر");
+            }
+        }
+        else
+        {
+            sb.AppendLine("❌ کشوری ندارد.");
+        }
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+
+        var rows = new List<InlineKeyboardButton[]>
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("🌍 دیدن کشورها", $"adm:player:countries:{targetId}"), InlineKeyboardButton.WithCallbackData("💎 رویال", $"adm:player:royal:{targetId}") },
+            new[] { InlineKeyboardButton.WithCallbackData(isBanned ? "✅ آنبن" : "🚫 بن", isBanned ? $"adm:player:unban:{targetId}" : $"adm:player:banask:{targetId}"), InlineKeyboardButton.WithCallbackData("🗑 حذف کشورها", $"adm:player:delcountries:{targetId}") },
+            new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", "adm:players:home"), InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") }
+        };
+        return (sb.ToString(), new InlineKeyboardMarkup(rows));
+    }
+
+    static async Task SendAdminCountriesHome(long adminId, CancellationToken ct)
+    {
+        if (!CanAdmin(adminId, "C_VIEW"))
+        {
+            await SendAdminDenied(adminId, ct);
+            return;
+        }
+        var screen = await BuildAdminCountriesHome(ct);
+        await SendPermanent(adminId, screen.Text, markup: screen.Keyboard, ct: ct);
+    }
+
+    static async Task<(string Text, InlineKeyboardMarkup Keyboard)> BuildAdminCountriesHome(CancellationToken ct = default)
+    {
+        var all = Database.GetAllCountries();
+        var top = all.Select(c => new { Country = c, MP = CalcManpower(c) }).OrderByDescending(x => x.MP).Take(8).ToList();
+        var sb = new StringBuilder();
+        sb.AppendLine("🌍 **مدیریت کشورها** 🌍");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine($"📊 کل کشورها: {all.Count:N0}");
+        sb.AppendLine();
+        sb.AppendLine("🏆 تاپ کشورها:");
+        for (int i = 0; i < top.Count; i++)
+        {
+            sb.AppendLine($"{i + 1}. {top[i].Country.Name} ({top[i].Country.OwnerName}) – {FormatManpowerK(top[i].MP)} – {top[i].Country.ChatId}");
+        }
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("🔍 جستجو نام", "adm:countries:search"), InlineKeyboardButton.WithCallbackData("⚔️ محاصره شده‌ها", "adm:countries:sieged") },
+            new[] { InlineKeyboardButton.WithCallbackData("🔄 تازه‌سازی", "adm:countries:home"), InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") }
+        });
+        return (sb.ToString(), kb);
+    }
+
+    static (string Text, InlineKeyboardMarkup Keyboard) BuildAdminCountrySearchResults(List<Country> results, string query)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"🔍 نتایج جستجو برای «{query}» – {results.Count} مورد");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        foreach (var c in results.Take(10))
+        {
+            sb.AppendLine($"• {c.Name} – {c.OwnerName} – {c.ChatId} – {FormatManpowerK(CalcManpower(c))}");
+        }
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        var rows = new List<InlineKeyboardButton[]>();
+        foreach (var c in results.Take(8))
+        {
+            rows.Add(new[] { InlineKeyboardButton.WithCallbackData($"🏳️ {c.Name}", $"adm:country:view:{c.OwnerId}:{c.ChatId}") });
+        }
+        rows.Add(new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", "adm:countries:home"), InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") });
+        return (sb.ToString(), new InlineKeyboardMarkup(rows));
+    }
+
+    static async Task SendAdminCountryDetail(long adminId, long ownerId, long chatId, CancellationToken ct)
+    {
+        if (!CanAdmin(adminId, "C_VIEW"))
+        {
+            await SendAdminDenied(adminId, ct);
+            return;
+        }
+        var screen = BuildAdminCountryDetail(ownerId, chatId);
+        await SendPermanent(adminId, screen.Text, markup: screen.Keyboard, ct: ct);
+    }
+
+    static (string Text, InlineKeyboardMarkup Keyboard) BuildAdminCountryDetail(long ownerId, long chatId)
+    {
+        var c = Database.GetCountry(ownerId, chatId);
+        if (c == null)
+        {
+            return ("❌ کشور یافت نشد.", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") } }));
+        }
+        var mp = CalcManpower(c);
+        var sb = new StringBuilder();
+        sb.AppendLine($"🏳️ **{c.Name}**");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine($"👤 مالک: {c.OwnerName} ({c.OwnerId})");
+        sb.AppendLine($"🌍 گپ: {c.ChatId}");
+        sb.AppendLine($"⚔️ فکشن: {c.Faction}");
+        sb.AppendLine($"⚡ مان‌پاور: {FormatManpowerK(mp)} ({mp:N0})");
+        sb.AppendLine($"💰 پول: {c.Money:N0} | 🔩 آهن: {c.Iron:N0}");
+        sb.AppendLine($"👥 جمعیت: {c.Population:N0} | 🏙 شهرها: {c.Cities}");
+        sb.AppendLine($"🪖 سرباز: {c.Soldiers:N0} | 🛡 تانک: {c.Tanks:N0} | ✈️ جنگنده: {c.Planes:N0} | 🛩 بمب‌افکن: {c.Bombers:N0} | 🎯 پدافند: {c.AntiAir:N0}");
+        sb.AppendLine($"🏥 رفاه: {c.Welfare:F1}% | 💸 مالیات: {c.TaxRate}% | 🎯 سربازگیری: {c.RecruitmentRate}");
+        sb.AppendLine($"🛡 محاصره: {c.Besieged} | 🏆 دفاع موفق: {c.DefenseWins}");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+
+        var rows = new List<InlineKeyboardButton[]>
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("💰 ویرایش پول", $"adm:country:editmoney:{ownerId}:{chatId}"), InlineKeyboardButton.WithCallbackData("🔩 آهن", $"adm:country:editiron:{ownerId}:{chatId}") },
+            new[] { InlineKeyboardButton.WithCallbackData("👥 جمعیت", $"adm:country:editpop:{ownerId}:{chatId}"), InlineKeyboardButton.WithCallbackData("🪖 سرباز", $"adm:country:editsoldiers:{ownerId}:{chatId}") },
+            new[] { InlineKeyboardButton.WithCallbackData("🛡 تانک", $"adm:country:edittanks:{ownerId}:{chatId}"), InlineKeyboardButton.WithCallbackData("✈️ جنگنده", $"adm:country:editplanes:{ownerId}:{chatId}") },
+            new[] { InlineKeyboardButton.WithCallbackData("🛩 بمب‌افکن", $"adm:country:editbombers:{ownerId}:{chatId}"), InlineKeyboardButton.WithCallbackData("🎯 پدافند", $"adm:country:editantiair:{ownerId}:{chatId}") },
+            new[] { InlineKeyboardButton.WithCallbackData("🗑 حذف کشور", $"adm:country:delask:{ownerId}:{chatId}"), InlineKeyboardButton.WithCallbackData("👤 پلیر", $"adm:player:view:{ownerId}") },
+            new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", "adm:countries:home"), InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") }
+        };
+        return (sb.ToString(), new InlineKeyboardMarkup(rows));
+    }
+
+    static async Task SendAdminGroupsHome(long adminId, CancellationToken ct)
+    {
+        if (!CanAdmin(adminId, "G_VIEW"))
+        {
+            await SendAdminDenied(adminId, ct);
+            return;
+        }
+        var screen = await BuildAdminGroupsHome(ct);
+        await SendPermanent(adminId, screen.Text, markup: screen.Keyboard, ct: ct);
+    }
+
+    static async Task<(string Text, InlineKeyboardMarkup Keyboard)> BuildAdminGroupsHome(CancellationToken ct = default)
+    {
+        var all = Database.GetAllCountries();
+        var groups = all.GroupBy(c => c.ChatId).Select(g => new { ChatId = g.Key, Count = g.Count(), MP = g.Sum(c => CalcManpower(c)) }).OrderByDescending(x => x.Count).Take(10).ToList();
+        var sb = new StringBuilder();
+        sb.AppendLine("👥 **مدیریت گروه‌ها** 👥");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine($"📊 کل گروه‌ها: {groups.Count} (از {all.Select(c => c.ChatId).Distinct().Count()} کل)");
+        foreach (var g in groups)
+        {
+            string title = await GetGroupTitleCached(g.ChatId, ct);
+            sb.AppendLine($"• {title} ({g.ChatId}) – 👥 {g.Count} – ⚡ {FormatManpowerK(g.MP)}");
+        }
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("🔍 جستجو گروه", "adm:groups:search"), InlineKeyboardButton.WithCallbackData("🏆 تاپ ممبر", "adm:lb:topgroups:count") },
+            new[] { InlineKeyboardButton.WithCallbackData("⚡ تاپ مان‌پاور", "adm:lb:topgroups:mp"), InlineKeyboardButton.WithCallbackData("🔄 تازه‌سازی", "adm:groups:home") },
+            new[] { InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") }
+        });
+        return (sb.ToString(), kb);
+    }
+
+    static async Task SendAdminGroupDetail(long adminId, long chatId, CancellationToken ct)
+    {
+        if (!CanAdmin(adminId, "G_VIEW"))
+        {
+            await SendAdminDenied(adminId, ct);
+            return;
+        }
+        var screen = await BuildAdminGroupDetail(chatId, ct);
+        await SendPermanent(adminId, screen.Text, markup: screen.Keyboard, ct: ct);
+    }
+
+    static async Task<(string Text, InlineKeyboardMarkup Keyboard)> BuildAdminGroupDetail(long chatId, CancellationToken ct = default)
+    {
+        var countries = Database.GetCountriesByChatId(chatId);
+        string title = await GetGroupTitleCached(chatId, ct);
+        long totalMP = countries.Sum(c => CalcManpower(c));
+        var sb = new StringBuilder();
+        sb.AppendLine($"👥 **گروه {title}**");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine($"🆔 آیدی: {chatId}");
+        sb.AppendLine($"👥 تعداد کشور: {countries.Count}");
+        sb.AppendLine($"⚡ مجموع مان‌پاور: {FormatManpowerK(totalMP)}");
+        sb.AppendLine($"🔓 معافیت قفل: {(Database.HasGroupLockExemption(chatId) ? "✅ دارد" : "❌ ندارد")}");
+        sb.AppendLine();
+        sb.AppendLine("🏆 تاپ 5 کشور گروه:");
+        foreach (var c in countries.OrderByDescending(c => CalcManpower(c)).Take(5))
+        {
+            sb.AppendLine($"• {c.Name} – {c.OwnerName} – {FormatManpowerK(CalcManpower(c))}");
+        }
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData(Database.HasGroupLockExemption(chatId) ? "🔒 حذف معافیت قفل" : "🔓 افزودن معافیت قفل", $"adm:group:togglelock:{chatId}"), InlineKeyboardButton.WithCallbackData("🧹 پاکسازی کول‌داون", $"adm:group:clearcd:{chatId}") },
+            new[] { InlineKeyboardButton.WithCallbackData("🛡 معافیت سپر همه", $"adm:group:shieldall:{chatId}"), InlineKeyboardButton.WithCallbackData("📊 دارایی روزانه", $"adm:group:assetnow:{chatId}") },
+            new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", "adm:groups:home"), InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") }
+        });
+        return (sb.ToString(), kb);
+    }
+
+    static async Task SendAdminAlliancesHome(long adminId, CancellationToken ct)
+    {
+        if (!CanAdmin(adminId, "ALLY"))
+        {
+            await SendAdminDenied(adminId, ct);
+            return;
+        }
+        var screen = BuildAdminAlliancesHome();
+        await SendPermanent(adminId, screen.Text, markup: screen.Keyboard, ct: ct);
+    }
+
+    static (string Text, InlineKeyboardMarkup Keyboard) BuildAdminAlliancesHome()
+    {
+        var allAlliances = new List<Alliance>();
+        var allCountries = Database.GetAllCountries();
+        var chatIds = allCountries.Select(c => c.ChatId).Distinct().ToList();
+        foreach (var cid in chatIds)
+        {
+            allAlliances.AddRange(Database.GetAlliancesByChatId(cid));
+        }
+        var top = allAlliances.Take(15).ToList();
+        var sb = new StringBuilder();
+        sb.AppendLine("🤝 **مدیریت اتحادها** 🤝");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine($"📊 کل اتحادها: {allAlliances.Count}");
+        foreach (var a in top.Take(10))
+        {
+            var members = Database.GetAllianceMembers(a.Id);
+            sb.AppendLine($"• {a.Name} – {a.ChatId} – 👑 {a.LeaderId} – 👥 {members.Count}");
+        }
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("🔄 تازه‌سازی", "adm:alliances:home"), InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") }
+        });
+        return (sb.ToString(), kb);
+    }
+
+    static async Task SendAdminEconomyHome(long adminId, CancellationToken ct)
+    {
+        if (!CanAdmin(adminId, "ROYAL"))
+        {
+            await SendAdminDenied(adminId, ct);
+            return;
+        }
+        var screen = BuildAdminEconomyHome();
+        await SendPermanent(adminId, screen.Text, markup: screen.Keyboard, ct: ct);
+    }
+
+    static (string Text, InlineKeyboardMarkup Keyboard) BuildAdminEconomyHome()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("💎 **اقتصاد و رویال** 💎");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        string lbChannel = Database.GetSetting("LeaderboardChannelId");
+        sb.AppendLine($"📢 کانال لیدربورد: {(string.IsNullOrWhiteSpace(lbChannel) || lbChannel == "0" ? "تنظیم نشده" : lbChannel)}");
+        sb.AppendLine();
+        sb.AppendLine("💡 برای واریز/کسر رویال، آیدی پلیر را وارد کنید.");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("💰 واریز رویال", "adm:economy:royal:add"), InlineKeyboardButton.WithCallbackData("💸 کسر رویال", "adm:economy:royal:deduct") },
+            new[] { InlineKeyboardButton.WithCallbackData("🏆 تاپ رویال", "adm:economy:toproyal"), InlineKeyboardButton.WithCallbackData("📊 تنظیمات اقتصادی", "adm:settings:home") },
+            new[] { InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") }
+        });
+        return (sb.ToString(), kb);
+    }
+
+    static async Task SendAdminWarHome(long adminId, CancellationToken ct)
+    {
+        if (!CanAdmin(adminId, "W_VIEW"))
+        {
+            await SendAdminDenied(adminId, ct);
+            return;
+        }
+        var screen = await BuildAdminWarHome(ct);
+        await SendPermanent(adminId, screen.Text, markup: screen.Keyboard, ct: ct);
+    }
+
+    static async Task<(string Text, InlineKeyboardMarkup Keyboard)> BuildAdminWarHome(CancellationToken ct = default)
+    {
+        var sieged = Database.GetSiegedCountries(10);
+        var recentBattles = Database.GetRecentBattles(5);
+        var sb = new StringBuilder();
+        sb.AppendLine("⚔️ **مدیریت جنگ** ⚔️");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine($"🔥 کشورهای محاصره شده: {sieged.Count}");
+        foreach (var c in sieged.Take(5))
+        {
+            sb.AppendLine($"• {c.Name} – {c.OwnerName} – محاصره {c.Besieged} – {c.Cities} شهر");
+        }
+        sb.AppendLine();
+        sb.AppendLine("📜 5 نبرد اخیر:");
+        foreach (var b in recentBattles)
+        {
+            sb.AppendLine($"• {b.AttackerName} vs {b.DefenderName} – {b.Winner} – {b.SuccessPercent}%");
+        }
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("🔥 محاصره‌ها", "adm:war:sieged"), InlineKeyboardButton.WithCallbackData("📜 نبردها", "adm:war:battles") },
+            new[] { InlineKeyboardButton.WithCallbackData("🛡 رفع بن حمله", "adm:war:clearlocks"), InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") }
+        });
+        return (sb.ToString(), kb);
+    }
+
+    static async Task SendAdminOperationsHome(long adminId, CancellationToken ct)
+    {
+        if (!CanAdmin(adminId, "O_VIEW"))
+        {
+            await SendAdminDenied(adminId, ct);
+            return;
+        }
+        var screen = BuildAdminOperationsHome();
+        await SendPermanent(adminId, screen.Text, markup: screen.Keyboard, ct: ct);
+    }
+
+    static (string Text, InlineKeyboardMarkup Keyboard) BuildAdminOperationsHome()
+    {
+        var transfers = Database.GetActiveTransfers();
+        var deployments = Database.GetActiveDeployments();
+        var sb = new StringBuilder();
+        sb.AppendLine("🚚 **عملیات و لجستیک** 🚚");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine($"📦 ترنسفر فعال: {transfers.Count}");
+        foreach (var t in transfers.Take(5))
+        {
+            sb.AppendLine($"• {t.SenderId} → {t.ReceiverId} – {t.ResourceType} {t.Amount} – {t.ModelName}");
+        }
+        sb.AppendLine();
+        sb.AppendLine($"⚔️ صف‌آرایی فعال: {deployments.Count}");
+        foreach (var d in deployments.Take(5))
+        {
+            sb.AppendLine($"• {d.Type} – {d.ChatId} – {d.Tanks}🛡 {d.Soldiers}🪖");
+        }
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("📦 ترنسفرها", "adm:ops:transfers"), InlineKeyboardButton.WithCallbackData("⚔️ صف‌آرایی‌ها", "adm:ops:deployments") },
+            new[] { InlineKeyboardButton.WithCallbackData("🧹 لغو همه ترنسفرها (تست)", "adm:ops:cleartransfers"), InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") }
+        });
+        return (sb.ToString(), kb);
+    }
+
+    static async Task SendAdminAnnounceHome(long adminId, CancellationToken ct)
+    {
+        if (!CanAdmin(adminId, "ANN"))
+        {
+            await SendAdminDenied(adminId, ct);
+            return;
+        }
+        var screen = BuildAdminAnnounceHome();
+        await SendPermanent(adminId, screen.Text, markup: screen.Keyboard, ct: ct);
+    }
+
+    static (string Text, InlineKeyboardMarkup Keyboard) BuildAdminAnnounceHome()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("📢 **مدیریت اعلامیه** 📢");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine("برای ارسال اعلامیه، متن را تایپ کنید و سپس مقصد را انتخاب کنید.");
+        sb.AppendLine();
+        sb.AppendLine("• 👥 همه گروه‌ها");
+        sb.AppendLine("• 👤 همه پیوی‌ها");
+        sb.AppendLine("• 🌐 همه");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("📝 نوشتن اعلامیه", "adm:ann:write"), InlineKeyboardButton.WithCallbackData("🏆 ارسال لیدربورد الان", "adm:lb:now") },
+            new[] { InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") }
+        });
+        return (sb.ToString(), kb);
+    }
+
+    static async Task SendAdminSettingsHome(long adminId, CancellationToken ct)
+    {
+        if (!CanAdmin(adminId, "SET"))
+        {
+            await SendAdminDenied(adminId, ct);
+            return;
+        }
+        var screen = BuildAdminSettingsHome();
+        await SendPermanent(adminId, screen.Text, markup: screen.Keyboard, ct: ct);
+    }
+
+    static (string Text, InlineKeyboardMarkup Keyboard) BuildAdminSettingsHome()
+    {
+        string lbChannel = Database.GetSetting("LeaderboardChannelId");
+        string updateMode = Database.GetSetting("UpdateMode");
+        if (string.IsNullOrWhiteSpace(updateMode)) updateMode = UpdateMode;
+        string updateVal = Database.GetSetting("UpdateValue");
+        if (string.IsNullOrWhiteSpace(updateVal)) updateVal = UpdateValue.ToString();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("⚙️ **تنظیمات آلیس** ⚙️");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine($"⏰ آپدیت: {updateMode} – {updateVal}");
+        sb.AppendLine($"🔒 قفل حمله: {ATTACK_LOCK_MINUTES} دقیقه");
+        sb.AppendLine($"🛡 سپر اولیه: {SHIELD_HOURS} ساعت");
+        sb.AppendLine($"⚔️ سقف حمله: {MAX_ATTACKS_PER_UPDATE}");
+        sb.AppendLine($"📦 سقف ترنسفر: {MAX_TRANSFERS_PER_UPDATE}");
+        sb.AppendLine($"📢 کانال لیدربورد: {(string.IsNullOrWhiteSpace(lbChannel) || lbChannel == "0" ? "تنظیم نشده ❌" : lbChannel + " ✅")}");
+        sb.AppendLine();
+        sb.AppendLine("هر شب ساعت 22:00 سه لیدربورد به پیوی ادمین و کانال (اگر تنظیم شده) ارسال می‌شود.");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("📢 تنظیم کانال لیدربورد", "adm:settings:lbchannel"), InlineKeyboardButton.WithCallbackData("🗑 حذف کانال", "adm:settings:lbchannel:clear") },
+            new[] { InlineKeyboardButton.WithCallbackData("⏰ قفل حمله", "adm:settings:attacklock"), InlineKeyboardButton.WithCallbackData("🛡 سپر", "adm:settings:shield") },
+            new[] { InlineKeyboardButton.WithCallbackData("⚔️ سقف حمله", "adm:settings:maxattacks"), InlineKeyboardButton.WithCallbackData("📦 سقف ترنسفر", "adm:settings:maxtransfers") },
+            new[] { InlineKeyboardButton.WithCallbackData("🏆 ارسال لیدربورد الان", "adm:lb:now"), InlineKeyboardButton.WithCallbackData("🔄 تازه‌سازی", "adm:settings:home") },
+            new[] { InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") }
+        });
+        return (sb.ToString(), kb);
+    }
+
+    static async Task SendAdminMaintenanceHome(long adminId, CancellationToken ct)
+    {
+        if (!CanAdminAny(adminId, "BACKUP", "RESTORE"))
+        {
+            await SendAdminDenied(adminId, ct);
+            return;
+        }
+        var screen = BuildAdminMaintenanceHome();
+        await SendPermanent(adminId, screen.Text, markup: screen.Keyboard, ct: ct);
+    }
+
+    static (string Text, InlineKeyboardMarkup Keyboard) BuildAdminMaintenanceHome()
+    {
+        long dbSize = 0;
+        try { if (System.IO.File.Exists("gamedata.db")) dbSize = new System.IO.FileInfo("gamedata.db").Length; } catch { }
+        var sb = new StringBuilder();
+        sb.AppendLine("🗄 **نگهداری و بکاپ** 🗄");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        sb.AppendLine($"💾 حجم دیتابیس: {dbSize / 1024.0 / 1024.0:F2} MB");
+        sb.AppendLine($"📊 کشورها: {Database.GetAllCountries().Count}");
+        sb.AppendLine();
+        sb.AppendLine("• بکاپ: فایل gamedata.db برای شما ارسال می‌شود");
+        sb.AppendLine("• ریستور: فایل دیتابیس جدید را آپلود کنید");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        var kb = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData("📥 دریافت بکاپ", "adm:backup:get"), InlineKeyboardButton.WithCallbackData("📤 آپلود بکاپ", "adm:backup:upload") },
+            new[] { InlineKeyboardButton.WithCallbackData("🧹 پاکسازی لاگ‌ها", "adm:maintenance:cleanup"), InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") }
+        });
+        return (sb.ToString(), kb);
     }
 
     static async Task HandleAdminCallbackAsync(
@@ -9079,18 +13294,698 @@ partial class Program
             return;
         }
 
-        if (action == "todo" &&
-            parts.Length >= 3)
+        // ================= PLAYERS MODULE =================
+        if (action == "players")
         {
-            string module = parts[2];
+            if (!CanAdmin(userId, "P_VIEW"))
+            {
+                await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct);
+                return;
+            }
+            string sub = parts.Length >= 3 ? parts[2] : "home";
+            if (sub == "home")
+            {
+                await RenderAdminScreen(callback, await BuildAdminPlayersHome(ct), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "search")
+            {
+                adminInputRequests[userId] = new AdminInputRequest { Kind = "search_player", ExpiresAtMs = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds() };
+                await RenderAdminScreen(callback, ("🔍 جستجوی پلیر\n\nآیدی عددی پلیر را وارد کنید.\nبرای لغو بنویسید: لغو", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:cancelinput") } })), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "banned")
+            {
+                var banned = Database.GetBannedUsers(20);
+                var sb = new StringBuilder();
+                sb.AppendLine("🚫 **لیست بن شده‌ها**");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                foreach (var b in banned)
+                {
+                    sb.AppendLine($"• {b.UserId} – {b.Reason} – {FormatAdminTime(b.BannedAtMs)}");
+                }
+                if (banned.Count == 0) sb.AppendLine("❌ کسی بن نیست.");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                var kb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", "adm:players:home"), InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") } });
+                await RenderAdminScreen(callback, (sb.ToString(), kb), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+        }
 
-            await AnswerAdminCallback(
-                callback,
-                $"ماژول «{AdminModuleTitle(module)}» در فاز بعد متصل می‌شود.",
-                true,
-                ct
-            );
-            return;
+        if (action == "player" && parts.Length >= 4)
+        {
+            string sub = parts[2];
+            if (!TryParseLong(parts[3], out long targetId)) { await AnswerAdminCallback(callback, "❌ آیدی نامعتبر", true, ct); return; }
+            if (sub == "view")
+            {
+                await RenderAdminScreen(callback, BuildAdminPlayerDetail(targetId), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "countries")
+            {
+                var countries = Database.GetCountriesByOwnerId(targetId);
+                var sb = new StringBuilder();
+                sb.AppendLine($"🌍 کشورها پلیر {targetId} – {countries.Count} عدد");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                foreach (var c in countries.Take(10))
+                    sb.AppendLine($"• {c.Name} – {c.ChatId} – {FormatManpowerK(CalcManpower(c))}");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                var kb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", $"adm:player:view:{targetId}"), InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") } });
+                await RenderAdminScreen(callback, (sb.ToString(), kb), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "royal")
+            {
+                if (!CanAdmin(userId, "ROYAL")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                long royal = Database.GetRoyalCoins(targetId);
+                var kb = new InlineKeyboardMarkup(new[]
+                {
+                    new[] { InlineKeyboardButton.WithCallbackData("💰 واریز", $"adm:economy:royal:add:{targetId}"), InlineKeyboardButton.WithCallbackData("💸 کسر", $"adm:economy:royal:deduct:{targetId}") },
+                    new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", $"adm:player:view:{targetId}") }
+                });
+                await RenderAdminScreen(callback, ($"💎 رویال پلیر {targetId}\nموجودی: {royal:N0}", kb), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "banask")
+            {
+                if (!CanAdmin(userId, "P_BAN")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                adminInputRequests[userId] = new AdminInputRequest { Kind = "ban_reason", TargetId = targetId, ExpiresAtMs = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds() };
+                await RenderAdminScreen(callback, ($"🚫 بن پلیر {targetId}\n\nدلیل بن را بنویسید.\nلغو: لغو", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:cancelinput") } })), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "unban")
+            {
+                if (!CanAdmin(userId, "P_BAN")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                Database.UnbanUser(targetId);
+                Database.WriteAdminAudit(userId, "PLAYER_UNBAN", "Player", targetId.ToString(), "", true);
+                await RenderAdminScreen(callback, BuildAdminPlayerDetail(targetId), ct);
+                await AnswerAdminCallback(callback, "✅ آنبن شد.", false, ct);
+                return;
+            }
+            if (sub == "delcountries")
+            {
+                if (!CanAdmin(userId, "C_DELETE")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                var countries = Database.GetCountriesByOwnerId(targetId);
+                foreach (var c in countries) Database.DeleteCountry(c.OwnerId, c.ChatId);
+                Database.WriteAdminAudit(userId, "PLAYER_DELCOUNTRIES", "Player", targetId.ToString(), $"{countries.Count}", true);
+                await RenderAdminScreen(callback, BuildAdminPlayerDetail(targetId), ct);
+                await AnswerAdminCallback(callback, $"✅ {countries.Count} کشور حذف شد.", false, ct);
+                return;
+            }
+        }
+
+        // ================= COUNTRIES MODULE =================
+        if (action == "countries")
+        {
+            if (!CanAdmin(userId, "C_VIEW")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+            string sub = parts.Length >= 3 ? parts[2] : "home";
+            if (sub == "home")
+            {
+                await RenderAdminScreen(callback, await BuildAdminCountriesHome(ct), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "search")
+            {
+                adminInputRequests[userId] = new AdminInputRequest { Kind = "search_country", ExpiresAtMs = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds() };
+                await RenderAdminScreen(callback, ("🔍 جستجوی کشور\n\nنام کشور را وارد کنید (حداقل 2 حرف).\nلغو: لغو", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:cancelinput") } })), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "sieged")
+            {
+                var sieged = Database.GetSiegedCountries(15);
+                var sb = new StringBuilder();
+                sb.AppendLine("🔥 **کشورهای محاصره شده**");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                foreach (var c in sieged)
+                    sb.AppendLine($"• {c.Name} – {c.OwnerName} – محاصره {c.Besieged} – {c.Cities} شهر – {c.ChatId}");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                var kb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", "adm:countries:home"), InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") } });
+                await RenderAdminScreen(callback, (sb.ToString(), kb), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+        }
+
+        if (action == "country" && parts.Length >= 4)
+        {
+            string sub = parts[2];
+            if (!TryParseLong(parts[3], out long ownerId)) { await AnswerAdminCallback(callback, "❌ آیدی نامعتبر", true, ct); return; }
+            long chatId = parts.Length >= 5 && TryParseLong(parts[4], out long cId) ? cId : 0;
+
+            if (sub == "view" && chatId != 0)
+            {
+                await RenderAdminScreen(callback, BuildAdminCountryDetail(ownerId, chatId), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub.StartsWith("edit"))
+            {
+                if (!CanAdmin(userId, "C_RES") && (sub == "editmoney" || sub == "editiron" || sub == "editpop")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                if (!CanAdmin(userId, "C_ARMY") && (sub.Contains("soldiers") || sub.Contains("tanks") || sub.Contains("planes") || sub.Contains("bombers") || sub.Contains("antiair"))) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                string kind = sub switch
+                {
+                    "editmoney" => "edit_country_money",
+                    "editiron" => "edit_country_iron",
+                    "editpop" => "edit_country_pop",
+                    "editsoldiers" => "edit_country_soldiers",
+                    "edittanks" => "edit_country_tanks",
+                    "editplanes" => "edit_country_planes",
+                    "editbombers" => "edit_country_bombers",
+                    "editantiair" => "edit_country_antiair",
+                    _ => ""
+                };
+                if (string.IsNullOrEmpty(kind)) { await AnswerAdminCallback(callback, "❌ نامشخص", true, ct); return; }
+                adminInputRequests[userId] = new AdminInputRequest { Kind = kind, TargetId = ownerId, ChatId = chatId, ExpiresAtMs = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds() };
+                await RenderAdminScreen(callback, ($"✏️ ویرایش {sub}\n\nمقدار جدید را وارد کنید برای کشور {ownerId}:{chatId}\nلغو: لغو", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:cancelinput") } })), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "delask")
+            {
+                if (!CanAdmin(userId, "C_DELETE")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                var kb = new InlineKeyboardMarkup(new[]
+                {
+                    new[] { InlineKeyboardButton.WithCallbackData("✅ بله حذف شود", $"adm:country:del:{ownerId}:{chatId}"), InlineKeyboardButton.WithCallbackData("❌ انصراف", $"adm:country:view:{ownerId}:{chatId}") }
+                });
+                await RenderAdminScreen(callback, ($"⚠️ حذف کشور {ownerId}:{chatId}؟", kb), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "del" && chatId != 0)
+            {
+                if (!CanAdmin(userId, "C_DELETE")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                Database.DeleteCountry(ownerId, chatId);
+                Database.WriteAdminAudit(userId, "COUNTRY_DELETE", "Country", $"{ownerId}:{chatId}", "", true);
+                await RenderAdminScreen(callback, ("✅ کشور حذف شد.", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") } })), ct);
+                await AnswerAdminCallback(callback, "✅ حذف شد.", false, ct);
+                return;
+            }
+        }
+
+        // ================= GROUPS MODULE =================
+        if (action == "groups")
+        {
+            if (!CanAdmin(userId, "G_VIEW")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+            string sub = parts.Length >= 3 ? parts[2] : "home";
+            if (sub == "home")
+            {
+                await RenderAdminScreen(callback, await BuildAdminGroupsHome(ct), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "search")
+            {
+                adminInputRequests[userId] = new AdminInputRequest { Kind = "search_group", ExpiresAtMs = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds() };
+                await RenderAdminScreen(callback, ("🔍 جستجوی گروه\n\nآیدی عددی گروه را وارد کنید.\nلغو: لغو", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:cancelinput") } })), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+        }
+
+        if (action == "group" && parts.Length >= 4)
+        {
+            string sub = parts[2];
+            if (!TryParseLong(parts[3], out long chatId)) { await AnswerAdminCallback(callback, "❌ آیدی نامعتبر", true, ct); return; }
+            if (sub == "view")
+            {
+                await RenderAdminScreen(callback, await BuildAdminGroupDetail(chatId, ct), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "togglelock")
+            {
+                if (!CanAdmin(userId, "G_EDIT")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                bool has = Database.HasGroupLockExemption(chatId);
+                Database.SetGroupLockExemption(chatId, !has);
+                Database.WriteAdminAudit(userId, has ? "GROUP_LOCK_REMOVE" : "GROUP_LOCK_ADD", "Group", chatId.ToString(), "", true);
+                await RenderAdminScreen(callback, await BuildAdminGroupDetail(chatId, ct), ct);
+                await AnswerAdminCallback(callback, has ? "✅ معافیت حذف شد." : "✅ معافیت افزوده شد.", false, ct);
+                return;
+            }
+            if (sub == "clearcd")
+            {
+                if (!CanAdmin(userId, "G_EDIT")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                Database.ClearAllLeaveCooldownsInChat(chatId);
+                Database.WriteAdminAudit(userId, "GROUP_CLEAR_CD", "Group", chatId.ToString(), "", true);
+                await RenderAdminScreen(callback, await BuildAdminGroupDetail(chatId, ct), ct);
+                await AnswerAdminCallback(callback, "✅ کول‌داون‌ها پاک شد.", false, ct);
+                return;
+            }
+            if (sub == "shieldall")
+            {
+                if (!CanAdmin(userId, "G_EDIT")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                Database.SetAllShieldExemptionsInChat(chatId);
+                Database.WriteAdminAudit(userId, "GROUP_SHIELD_ALL", "Group", chatId.ToString(), "", true);
+                await RenderAdminScreen(callback, await BuildAdminGroupDetail(chatId, ct), ct);
+                await AnswerAdminCallback(callback, "✅ همه معافیت سپر گرفتند.", false, ct);
+                return;
+            }
+            if (sub == "assetnow")
+            {
+                if (!CanAdmin(userId, "G_EDIT")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                try { await RunAssetUpdateCore(); await AnswerAdminCallback(callback, "✅ آپدیت دارایی اجرا شد.", false, ct); }
+                catch (Exception ex) { await AnswerAdminCallback(callback, $"❌ خطا: {ex.Message}", true, ct); }
+                return;
+            }
+        }
+
+        // ================= ALLIANCES MODULE =================
+        if (action == "alliances")
+        {
+            if (!CanAdmin(userId, "ALLY")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+            string sub = parts.Length >= 3 ? parts[2] : "home";
+            if (sub == "home")
+            {
+                await RenderAdminScreen(callback, BuildAdminAlliancesHome(), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+        }
+
+        if (action == "alliance" && parts.Length >= 4)
+        {
+            if (!TryParseLong(parts[3], out long allianceId)) { await AnswerAdminCallback(callback, "❌ آیدی نامعتبر", true, ct); return; }
+            string sub = parts[2];
+            if (sub == "view")
+            {
+                var alliance = Database.GetAllianceById(allianceId);
+                if (alliance == null) { await AnswerAdminCallback(callback, "❌ اتحاد یافت نشد.", true, ct); return; }
+                var members = Database.GetAllianceMembers(allianceId);
+                var sb = new StringBuilder();
+                sb.AppendLine($"🤝 **{alliance.Name}**");
+                sb.AppendLine($"🆔 {alliance.Id} | 🌍 {alliance.ChatId} | 👑 {alliance.LeaderId}");
+                sb.AppendLine($"👥 اعضا: {members.Count}");
+                foreach (var m in members.Take(15))
+                {
+                    var c = Database.GetCountry(m, alliance.ChatId);
+                    sb.AppendLine($"• {m} – {c?.Name ?? "بدون کشور"} – {c?.OwnerName}");
+                }
+                var kb = new InlineKeyboardMarkup(new[]
+                {
+                    new[] { InlineKeyboardButton.WithCallbackData("🗑 حذف اتحاد", $"adm:alliance:del:{allianceId}"), InlineKeyboardButton.WithCallbackData("🔙 بازگشت", "adm:alliances:home") }
+                });
+                await RenderAdminScreen(callback, (sb.ToString(), kb), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "del")
+            {
+                if (!CanAdmin(userId, "ALLY")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                Database.DeleteAlliance(allianceId);
+                Database.WriteAdminAudit(userId, "ALLIANCE_DELETE", "Alliance", allianceId.ToString(), "", true);
+                await RenderAdminScreen(callback, BuildAdminAlliancesHome(), ct);
+                await AnswerAdminCallback(callback, "✅ اتحاد حذف شد.", false, ct);
+                return;
+            }
+        }
+
+        // ================= ECONOMY MODULE =================
+        if (action == "economy")
+        {
+            if (!CanAdmin(userId, "ROYAL")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+            string sub = parts.Length >= 3 ? parts[2] : "home";
+            if (sub == "home")
+            {
+                await RenderAdminScreen(callback, BuildAdminEconomyHome(), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "royal" && parts.Length >= 4)
+            {
+                string op = parts[3];
+                long targetId = parts.Length >= 5 && TryParseLong(parts[4], out long tid) ? tid : 0;
+                if (targetId == 0)
+                {
+                    adminInputRequests[userId] = new AdminInputRequest { Kind = op == "add" ? "royal_add" : "royal_deduct", TargetId = 0, ExpiresAtMs = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds(), Extra = op };
+                    await RenderAdminScreen(callback, ("💎 رویال\n\nآیدی و مقدار را وارد کنید مثل: 123456 100\nلغو: لغو", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:cancelinput") } })), ct);
+                    await AnswerAdminCallback(callback, null, false, ct);
+                    return;
+                }
+                else
+                {
+                    adminInputRequests[userId] = new AdminInputRequest { Kind = op == "add" ? "royal_add" : "royal_deduct", TargetId = targetId, ExpiresAtMs = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds() };
+                    await RenderAdminScreen(callback, ($"💎 {(op == "add" ? "واریز" : "کسر")} رویال برای {targetId}\n\nمقدار را وارد کنید:\nلغو: لغو", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:cancelinput") } })), ct);
+                    await AnswerAdminCallback(callback, null, false, ct);
+                    return;
+                }
+            }
+            if (sub == "toproyal")
+            {
+                var all = Database.GetAllCountries().Select(c => c.OwnerId).Distinct().Take(100).Select(id => new { Id = id, Royal = Database.GetRoyalCoins(id) }).OrderByDescending(x => x.Royal).Take(10).ToList();
+                var sb = new StringBuilder();
+                sb.AppendLine("💎 **تاپ رویال**");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                foreach (var r in all)
+                    sb.AppendLine($"• {r.Id} – {r.Royal:N0}");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                var kb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", "adm:economy:home") } });
+                await RenderAdminScreen(callback, (sb.ToString(), kb), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+        }
+
+        // ================= WAR MODULE =================
+        if (action == "war")
+        {
+            if (!CanAdmin(userId, "W_VIEW")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+            string sub = parts.Length >= 3 ? parts[2] : "home";
+            if (sub == "home")
+            {
+                await RenderAdminScreen(callback, await BuildAdminWarHome(ct), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "sieged")
+            {
+                var sieged = Database.GetSiegedCountries(20);
+                var sb = new StringBuilder();
+                sb.AppendLine("🔥 **محاصره شده‌ها**");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                foreach (var c in sieged)
+                    sb.AppendLine($"• {c.Name} – {c.OwnerName} – {c.ChatId} – محاصره {c.Besieged} – {c.Cities} شهر");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                var kb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", "adm:war:home") } });
+                await RenderAdminScreen(callback, (sb.ToString(), kb), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "battles")
+            {
+                var battles = Database.GetRecentBattles(15);
+                var sb = new StringBuilder();
+                sb.AppendLine("📜 **نبردهای اخیر**");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                foreach (var b in battles)
+                    sb.AppendLine($"• {b.AttackerName} vs {b.DefenderName} – {b.Winner} – {b.SuccessPercent}% – {b.Timestamp}");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                var kb = new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", "adm:war:home") } });
+                await RenderAdminScreen(callback, (sb.ToString(), kb), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "clearlocks")
+            {
+                if (!CanAdmin(userId, "W_EDIT")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                try
+                {
+                    using var con = Database.OpenConForAdmin();
+                    using var cmd = con.CreateCommand();
+                    cmd.CommandText = "DELETE FROM AttackAbandonLocks";
+                    cmd.ExecuteNonQuery();
+                    await AnswerAdminCallback(callback, "✅ تمام قفل‌های بزن‌دررو پاک شد.", false, ct);
+                }
+                catch (Exception ex) { await AnswerAdminCallback(callback, $"❌ خطا: {ex.Message}", true, ct); }
+                return;
+            }
+        }
+
+        // ================= OPERATIONS MODULE =================
+        if (action == "ops")
+        {
+            if (!CanAdmin(userId, "O_VIEW")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+            string sub = parts.Length >= 3 ? parts[2] : "home";
+            if (sub == "home")
+            {
+                await RenderAdminScreen(callback, BuildAdminOperationsHome(), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "transfers")
+            {
+                var transfers = Database.GetActiveTransfers().Take(15).ToList();
+                var sb = new StringBuilder();
+                sb.AppendLine("📦 **ترنسفرهای فعال**");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                foreach (var t in transfers)
+                    sb.AppendLine($"• {t.Id}: {t.SenderId}->{t.ReceiverId} {t.ResourceType} {t.Amount} {t.ModelName} – {t.ChatId}");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                var rows = new List<InlineKeyboardButton[]>();
+                foreach (var t in transfers.Take(8))
+                    rows.Add(new[] { InlineKeyboardButton.WithCallbackData($"❌ لغو {t.Id}", $"adm:ops:canceltransfer:{t.Id}") });
+                rows.Add(new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", "adm:ops:home") });
+                await RenderAdminScreen(callback, (sb.ToString(), new InlineKeyboardMarkup(rows)), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "deployments")
+            {
+                var deps = Database.GetActiveDeployments().Take(15).ToList();
+                var sb = new StringBuilder();
+                sb.AppendLine("⚔️ **صف‌آرایی‌های فعال**");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                foreach (var d in deps)
+                    sb.AppendLine($"• {d.Id}: {d.Type} – {d.ChatId} – {d.Tanks}🛡 {d.Soldiers}🪖 – تا {FormatAdminTime(d.EndAtMs)}");
+                sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+                var rows = new List<InlineKeyboardButton[]>();
+                foreach (var d in deps.Take(8))
+                    rows.Add(new[] { InlineKeyboardButton.WithCallbackData($"❌ لغو {d.Id}", $"adm:ops:canceldep:{d.Id}") });
+                rows.Add(new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", "adm:ops:home") });
+                await RenderAdminScreen(callback, (sb.ToString(), new InlineKeyboardMarkup(rows)), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "canceltransfer" && parts.Length >= 4 && TryParseLong(parts[3], out long tId))
+            {
+                if (!CanAdmin(userId, "O_EDIT")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                Database.DeleteTransfer(tId);
+                Database.WriteAdminAudit(userId, "TRANSFER_CANCEL", "Transfer", tId.ToString(), "", true);
+                await RenderAdminScreen(callback, BuildAdminOperationsHome(), ct);
+                await AnswerAdminCallback(callback, $"✅ ترنسفر {tId} لغو شد.", false, ct);
+                return;
+            }
+            if (sub == "canceldep" && parts.Length >= 4 && TryParseLong(parts[3], out long dId))
+            {
+                if (!CanAdmin(userId, "O_EDIT")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                var dep = Database.GetDeploymentById(dId);
+                if (dep != null) Database.CancelDeploymentForces(dep);
+                else Database.DeleteDeployment(dId);
+                Database.WriteAdminAudit(userId, "DEPLOY_CANCEL", "Deployment", dId.ToString(), "", true);
+                await RenderAdminScreen(callback, BuildAdminOperationsHome(), ct);
+                await AnswerAdminCallback(callback, $"✅ صف‌آرایی {dId} لغو شد.", false, ct);
+                return;
+            }
+            if (sub == "cleartransfers")
+            {
+                if (!CanAdmin(userId, "O_EDIT")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                var transfers = Database.GetActiveTransfers();
+                foreach (var t in transfers) Database.DeleteTransfer(t.Id);
+                await RenderAdminScreen(callback, BuildAdminOperationsHome(), ct);
+                await AnswerAdminCallback(callback, $"✅ {transfers.Count} ترنسفر پاک شد.", false, ct);
+                return;
+            }
+        }
+
+        // ================= ANNOUNCE MODULE =================
+        if (action == "ann")
+        {
+            if (!CanAdmin(userId, "ANN")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+            string sub = parts.Length >= 3 ? parts[2] : "home";
+            if (sub == "home")
+            {
+                await RenderAdminScreen(callback, BuildAdminAnnounceHome(), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "write")
+            {
+                adminInputRequests[userId] = new AdminInputRequest { Kind = "announce_text", ExpiresAtMs = DateTimeOffset.UtcNow.AddMinutes(10).ToUnixTimeMilliseconds() };
+                await RenderAdminScreen(callback, ("📝 اعلامیه\n\nمتن اعلامیه را ارسال کنید (متن، عکس، فایل). برای لغو: لغو", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:cancelinput") } })), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "groups" || sub == "private" || sub == "all")
+            {
+                if (!adminInputRequests.TryGetValue(userId, out var annReq) || !annReq.Kind.StartsWith("announce")) { await AnswerAdminCallback(callback, "❌ ابتدا متن را وارد کنید.", true, ct); return; }
+                string payload = annReq.Extra;
+                string scopeText = sub switch { "groups" => "گروه‌ها", "private" => "پیوی‌ها", _ => "همه" };
+                var allCountries = Database.GetAllCountries();
+                var chatIds = allCountries.Select(c => c.ChatId).Distinct().ToList();
+                var ownerIds = allCountries.Select(c => c.OwnerId).Distinct().ToList();
+                int sent = 0;
+                bool isPhoto = payload.Contains("|PHOTO|");
+                bool isDoc = payload.Contains("|DOC|");
+                string fileId = "";
+                string caption = payload;
+                if (isPhoto) { var parts2 = payload.Split("|PHOTO|"); fileId = parts2[0]; caption = parts2.Length > 1 ? parts2[1] : ""; }
+                if (isDoc) { var parts2 = payload.Split("|DOC|"); fileId = parts2[0]; caption = parts2.Length > 1 ? parts2[1] : ""; }
+
+                List<long> targets = sub switch { "groups" => chatIds, "private" => ownerIds, _ => chatIds.Concat(ownerIds).Distinct().ToList() };
+
+                foreach (var tgt in targets)
+                {
+                    try
+                    {
+                        if (isPhoto && !string.IsNullOrEmpty(fileId))
+                            await bot.SendPhotoAsync(tgt, fileId, caption: caption, cancellationToken: ct);
+                        else if (isDoc && !string.IsNullOrEmpty(fileId))
+                            await bot.SendDocumentAsync(tgt, new InputOnlineFile(fileId), caption: caption, cancellationToken: ct);
+                        else
+                            await bot.SendTextMessageAsync(tgt, caption, cancellationToken: ct);
+                        sent++;
+                        await Task.Delay(50, ct);
+                    }
+                    catch { }
+                }
+                adminInputRequests.TryRemove(userId, out _);
+                Database.WriteAdminAudit(userId, "ANNOUNCE", "Announce", sub, $"sent={sent}", true);
+                await RenderAdminScreen(callback, ($"✅ اعلامیه به {sent} مقصد ({scopeText}) ارسال شد.", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") } })), ct);
+                await AnswerAdminCallback(callback, $"✅ ارسال شد: {sent}", false, ct);
+                return;
+            }
+            if (sub == "cancel")
+            {
+                adminInputRequests.TryRemove(userId, out _);
+                await RenderAdminScreen(callback, BuildAdminAnnounceHome(), ct);
+                await AnswerAdminCallback(callback, "❌ لغو شد.", false, ct);
+                return;
+            }
+        }
+
+        // ================= SETTINGS MODULE =================
+        if (action == "settings")
+        {
+            if (!CanAdmin(userId, "SET")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+            string sub = parts.Length >= 3 ? parts[2] : "home";
+            if (sub == "home")
+            {
+                await RenderAdminScreen(callback, BuildAdminSettingsHome(), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "lbchannel")
+            {
+                if (parts.Length >= 4 && parts[3] == "clear")
+                {
+                    Database.SetSetting("LeaderboardChannelId", "0");
+                    Database.WriteAdminAudit(userId, "SET_LB_CHANNEL_CLEAR", "Settings", "", "", true);
+                    await RenderAdminScreen(callback, BuildAdminSettingsHome(), ct);
+                    await AnswerAdminCallback(callback, "✅ کانال حذف شد.", false, ct);
+                    return;
+                }
+                adminInputRequests[userId] = new AdminInputRequest { Kind = "set_leaderboard_channel", ExpiresAtMs = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds() };
+                await RenderAdminScreen(callback, ("📢 تنظیم کانال لیدربورد\n\nآیدی عددی کانال (مثلاً -1001234567890) یا @username کانال را ارسال کنید، یا یک پیام از کانال فوروارد کنید.\nبرای حذف کانال 0 بنویسید.\nلغو: لغو", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:cancelinput") } })), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "attacklock")
+            {
+                adminInputRequests[userId] = new AdminInputRequest { Kind = "set_attack_lock", ExpiresAtMs = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds() };
+                await RenderAdminScreen(callback, ($"⏰ قفل حمله فعلی: {ATTACK_LOCK_MINUTES} دقیقه\n\nمقدار جدید را وارد کنید (0-1440):\nلغو: لغو", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:cancelinput") } })), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "shield")
+            {
+                adminInputRequests[userId] = new AdminInputRequest { Kind = "set_shield_hours", ExpiresAtMs = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds() };
+                await RenderAdminScreen(callback, ($"🛡 سپر فعلی: {SHIELD_HOURS} ساعت\n\nمقدار جدید:\nلغو: لغو", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:cancelinput") } })), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "maxattacks")
+            {
+                adminInputRequests[userId] = new AdminInputRequest { Kind = "set_max_attacks", ExpiresAtMs = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds() };
+                await RenderAdminScreen(callback, ($"⚔️ سقف حمله فعلی: {MAX_ATTACKS_PER_UPDATE}\n\nمقدار جدید:\nلغو: لغو", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:cancelinput") } })), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "maxtransfers")
+            {
+                adminInputRequests[userId] = new AdminInputRequest { Kind = "set_max_transfers", ExpiresAtMs = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeMilliseconds() };
+                await RenderAdminScreen(callback, ($"📦 سقف ترنسفر فعلی: {MAX_TRANSFERS_PER_UPDATE}\n\nمقدار جدید:\nلغو: لغو", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:cancelinput") } })), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+        }
+
+        // ================= LEADERBOARD ACTIONS =================
+        if (action == "lb")
+        {
+            string sub = parts.Length >= 3 ? parts[2] : "";
+            if (sub == "now")
+            {
+                if (!CanAdminAny(userId, "ANN", "SET")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                await AnswerAdminCallback(callback, "⏳ در حال ارسال لیدربورد...", false, ct);
+                try { await SendNightlyLeaderboards(ct); await AnswerAdminCallback(callback, "✅ لیدربوردها ارسال شد.", false, ct); }
+                catch (Exception ex) { await AnswerAdminCallback(callback, $"❌ خطا: {ex.Message}", true, ct); }
+                return;
+            }
+            if (sub == "topplayers")
+            {
+                string txt = await BuildTopPlayersManpowerText(ct);
+                await RenderAdminScreen(callback, (txt, new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", "adm:players:home"), InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") } })), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "topgroups" && parts.Length >= 4)
+            {
+                string type = parts[3];
+                string txt = type == "count" ? await BuildTopGroupsByMembersText(ct) : await BuildTopGroupsByManpowerText(ct);
+                await RenderAdminScreen(callback, (txt, new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("🔙 بازگشت", "adm:groups:home"), InlineKeyboardButton.WithCallbackData("🏠 خانه", "adm:home") } })), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+        }
+
+        // ================= BACKUP / MAINTENANCE =================
+        if (action == "backup")
+        {
+            if (!CanAdminAny(userId, "BACKUP", "RESTORE")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+            string sub = parts.Length >= 3 ? parts[2] : "";
+            if (sub == "get")
+            {
+                try
+                {
+                    await bot.SendDocumentAsync(userId, new InputOnlineFile(System.IO.File.OpenRead("gamedata.db"), $"gamedata_backup_{DateTime.UtcNow:yyyyMMdd_HHmmss}.db"), caption: "📦 بکاپ دیتابیس", cancellationToken: ct);
+                    Database.WriteAdminAudit(userId, "BACKUP_GET", "Maintenance", "", "", true);
+                    await AnswerAdminCallback(callback, "✅ بکاپ ارسال شد.", false, ct);
+                }
+                catch (Exception ex) { await AnswerAdminCallback(callback, $"❌ خطا: {ex.Message}", true, ct); }
+                return;
+            }
+            if (sub == "upload")
+            {
+                adminInputRequests[userId] = new AdminInputRequest { Kind = "awaiting_db_file", ExpiresAtMs = DateTimeOffset.UtcNow.AddMinutes(10).ToUnixTimeMilliseconds() };
+                await RenderAdminScreen(callback, ("📤 آپلود بکاپ\n\nفایل gamedata.db را ارسال کنید.\nلغو: لغو", new InlineKeyboardMarkup(new[] { new[] { InlineKeyboardButton.WithCallbackData("❌ لغو", "adm:cancelinput") } })), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+        }
+
+        if (action == "maintenance" && parts.Length >= 3)
+        {
+            string sub = parts[2];
+            if (sub == "home")
+            {
+                if (!CanAdminAny(userId, "BACKUP", "RESTORE", "SET")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                await RenderAdminScreen(callback, BuildAdminMaintenanceHome(), ct);
+                await AnswerAdminCallback(callback, null, false, ct);
+                return;
+            }
+            if (sub == "cleanup")
+            {
+                if (!CanAdmin(userId, "SET")) { await AnswerAdminCallback(callback, "⛔ دسترسی ندارید.", true, ct); return; }
+                try
+                {
+                    using var con = Database.OpenConForAdmin();
+                    using var cmd = con.CreateCommand();
+                    cmd.CommandText = "DELETE FROM VisionMessageMap WHERE CreatedAtMs < @old; DELETE FROM VisionLogs WHERE CreatedAtMs < @old;";
+                    cmd.Parameters.AddWithValue("@old", DateTimeOffset.UtcNow.AddDays(-30).ToUnixTimeMilliseconds());
+                    cmd.ExecuteNonQuery();
+                    await AnswerAdminCallback(callback, "✅ لاگ‌های قدیمی پاک شد.", false, ct);
+                }
+                catch (Exception ex) { await AnswerAdminCallback(callback, $"❌ {ex.Message}", true, ct); }
+                return;
+            }
         }
 
         if (action == "close")
@@ -9569,6 +14464,211 @@ partial class Program
                 TimeSpan.FromMinutes(1),
                 Timeout.InfiniteTimeSpan
             );
+        }
+    }
+
+    // ================= LEADERBOARDS =================
+    static Timer? leaderboardTimer;
+    static readonly ConcurrentDictionary<long, string> groupTitleCache = new();
+
+    static async Task<string> GetGroupTitleCached(long chatId, CancellationToken ct = default)
+    {
+        if (groupTitleCache.TryGetValue(chatId, out var cached) && !string.IsNullOrWhiteSpace(cached))
+            return cached;
+
+        try
+        {
+            var ch = await bot.GetChatAsync(chatId, ct);
+            string title = ch.Title ?? ch.FirstName ?? $"گروه {chatId}";
+            if (!string.IsNullOrWhiteSpace(title))
+            {
+                groupTitleCache[chatId] = title;
+                return title;
+            }
+        }
+        catch { }
+        return $"گروه {chatId}";
+    }
+
+    static string FormatManpowerK(long mp)
+    {
+        if (mp >= 1000)
+            return $"{mp / 1000.0:F1}K";
+        return $"{mp:N0}";
+    }
+
+    static async Task<string> BuildTopPlayersManpowerText(CancellationToken ct = default)
+    {
+        var all = Database.GetAllCountries();
+        var ranked = all.Select(c => new { Country = c, MP = CalcManpower(c) })
+                        .OrderByDescending(x => x.MP)
+                        .Take(10)
+                        .ToList();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("🏆 **رده‌بندی برترین‌های مان‌پاور** 🏆");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+
+        for (int i = 0; i < ranked.Count; i++)
+        {
+            var item = ranked[i];
+            string medal = i switch { 0 => "🥇", 1 => "🥈", 2 => "🥉", _ => $"{i + 1}." };
+            string groupTitle = await GetGroupTitleCached(item.Country.ChatId, ct);
+
+            sb.AppendLine($"{medal} **{item.Country.Name}**");
+            sb.AppendLine($"👤 {item.Country.OwnerName}");
+            sb.AppendLine($"⚡ {FormatManpowerK(item.MP)} مان‌پاور");
+            sb.AppendLine($"🌍 {groupTitle}");
+            sb.AppendLine();
+        }
+
+        if (ranked.Count == 0)
+            sb.AppendLine("❌ هنوز کشوری ثبت نشده است.");
+
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        return sb.ToString();
+    }
+
+    static async Task<string> BuildTopGroupsByMembersText(CancellationToken ct = default)
+    {
+        var all = Database.GetAllCountries();
+        var groups = all.GroupBy(c => c.ChatId)
+                        .Select(g => new { ChatId = g.Key, Count = g.Count() })
+                        .OrderByDescending(x => x.Count)
+                        .Take(10)
+                        .ToList();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("👥 **رده‌بندی برترین‌های تعداد پلیر** 👥");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+
+        for (int i = 0; i < groups.Count; i++)
+        {
+            var g = groups[i];
+            string medal = i switch { 0 => "🥇", 1 => "🥈", 2 => "🥉", _ => $"{i + 1}." };
+            string title = await GetGroupTitleCached(g.ChatId, ct);
+            sb.AppendLine($"{medal} **{title}**");
+            sb.AppendLine($"👥 {g.Count} پلیر");
+            sb.AppendLine();
+        }
+
+        if (groups.Count == 0)
+            sb.AppendLine("❌ گروهی یافت نشد.");
+
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        return sb.ToString();
+    }
+
+    static async Task<string> BuildTopGroupsByManpowerText(CancellationToken ct = default)
+    {
+        var all = Database.GetAllCountries();
+        var groups = all.GroupBy(c => c.ChatId)
+                        .Select(g => new
+                        {
+                            ChatId = g.Key,
+                            TotalMP = g.Sum(c => CalcManpower(c))
+                        })
+                        .OrderByDescending(x => x.TotalMP)
+                        .Take(10)
+                        .ToList();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("⚡ **رده‌بندی برترین‌های مجموع مان‌پاور** ⚡");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+
+        for (int i = 0; i < groups.Count; i++)
+        {
+            var g = groups[i];
+            string medal = i switch { 0 => "🥇", 1 => "🥈", 2 => "🥉", _ => $"{i + 1}." };
+            string title = await GetGroupTitleCached(g.ChatId, ct);
+            sb.AppendLine($"{medal} **{title}**");
+            sb.AppendLine($"⚡ {FormatManpowerK(g.TotalMP)} مان‌پاور");
+            sb.AppendLine();
+        }
+
+        if (groups.Count == 0)
+            sb.AppendLine("❌ گروهی یافت نشد.");
+
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━");
+        return sb.ToString();
+    }
+
+    static async Task SendNightlyLeaderboards(CancellationToken ct = default)
+    {
+        try
+        {
+            string topPlayers = await BuildTopPlayersManpowerText(ct);
+            string topGroupsMembers = await BuildTopGroupsByMembersText(ct);
+            string topGroupsMP = await BuildTopGroupsByManpowerText(ct);
+
+            // Send to owner private
+            try { await SendPermanent(OWNER_ID, topPlayers, parseMode: ParseMode.Markdown, ct: ct); } catch { }
+            try { await Task.Delay(500, ct); } catch { }
+            try { await SendPermanent(OWNER_ID, topGroupsMembers, parseMode: ParseMode.Markdown, ct: ct); } catch { }
+            try { await Task.Delay(500, ct); } catch { }
+            try { await SendPermanent(OWNER_ID, topGroupsMP, parseMode: ParseMode.Markdown, ct: ct); } catch { }
+
+            // Send to configured channel if exists
+            long channelId = 0;
+            string chStr = Database.GetSetting("LeaderboardChannelId");
+            if (TryParseLong(chStr, out long parsed)) channelId = parsed;
+
+            if (channelId != 0)
+            {
+                try { await bot.SendTextMessageAsync(channelId, topPlayers, parseMode: ParseMode.Markdown, cancellationToken: ct); } catch (Exception ex) { Console.WriteLine($"[LEADERBOARD CHANNEL ERR] {ex.Message}"); }
+                try { await Task.Delay(500, ct); } catch { }
+                try { await bot.SendTextMessageAsync(channelId, topGroupsMembers, parseMode: ParseMode.Markdown, cancellationToken: ct); } catch { }
+                try { await Task.Delay(500, ct); } catch { }
+                try { await bot.SendTextMessageAsync(channelId, topGroupsMP, parseMode: ParseMode.Markdown, cancellationToken: ct); } catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[LEADERBOARD SEND ERR] {ex.Message}");
+        }
+    }
+
+    static void StartLeaderboardTimer()
+    {
+        try
+        {
+            leaderboardTimer?.Dispose();
+            leaderboardTimer = null;
+
+            DateTime now = GetTehranNow();
+            // Every day at 22:00 Tehran, same time as activity stats, but +30 seconds to avoid spam collision
+            DateTime target = now.Date.AddHours(22).AddSeconds(30);
+            if (target <= now)
+                target = target.AddDays(1);
+
+            TimeSpan delay = target - now;
+
+            leaderboardTimer = new Timer(async _ =>
+            {
+                try
+                {
+                    await SendNightlyLeaderboards(CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[LEADERBOARD TIMER ERR] {ex.Message}");
+                }
+                finally
+                {
+                    try { StartLeaderboardTimer(); } catch { }
+                }
+            }, null, delay, Timeout.InfiniteTimeSpan);
+
+            Console.WriteLine($"[LEADERBOARD TIMER] next: {target:yyyy-MM-dd HH:mm:ss} Tehran");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[LEADERBOARD TIMER SETUP ERR] {ex.Message}");
+            leaderboardTimer?.Dispose();
+            leaderboardTimer = new Timer(_ =>
+            {
+                try { StartLeaderboardTimer(); } catch { }
+            }, null, TimeSpan.FromMinutes(1), Timeout.InfiniteTimeSpan);
         }
     }
 }
